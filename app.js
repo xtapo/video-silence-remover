@@ -4,6 +4,9 @@
 (() => {
   const $ = (id) => document.getElementById(id);
 
+  const FFMPEG_VER = '0.12.10';
+  const CORE_VER = '0.12.6';
+
   const state = {
     file: null,
     duration: 0,
@@ -121,11 +124,9 @@
     const minKeep = parseFloat($('minKeep').value);
     const dur = state.duration || env.length * fd;
 
-    // 1) đánh dấu frame ồn
     const loud = new Uint8Array(env.length);
     for (let i = 0; i < env.length; i++) loud[i] = env[i] > th ? 1 : 0;
 
-    // 2) gom thành đoạn ồn thô
     let segs = [], cur = null;
     for (let i = 0; i < loud.length; i++) {
       if (loud[i]) { if (!cur) cur = { start: i * fd, end: (i + 1) * fd }; else cur.end = (i + 1) * fd; }
@@ -133,7 +134,6 @@
     }
     if (cur) segs.push(cur);
 
-    // 3) nối các đoạn cách nhau < minSil (khoảng lặng quá ngắn thì giữ)
     const merged = [];
     for (const s of segs) {
       const last = merged[merged.length - 1];
@@ -141,7 +141,6 @@
       else merged.push({ ...s });
     }
 
-    // 4) bỏ đoạn quá ngắn, thêm padding, kẹp biên, nối chồng lấn
     const keep = [];
     for (const s of merged) {
       if (s.end - s.start < minKeep) continue;
@@ -176,13 +175,10 @@
     g.clearRect(0, 0, w, h);
     const dur = state.duration || 1;
 
-    // nền = cắt bỏ
     g.fillStyle = '#ff5c6c33'; g.fillRect(0, 0, w, h);
-    // đoạn giữ
     g.fillStyle = '#3ddc8433';
     for (const s of state.keep) g.fillRect(s.start / dur * w, 0, Math.max(1, (s.end - s.start) / dur * w), h);
 
-    // dạng sóng
     const env = state.envelope;
     if (env) {
       const th = parseFloat($('threshold').value);
@@ -195,13 +191,11 @@
         g.strokeStyle = mx > th ? '#3ddc84' : '#ff5c6c';
         g.beginPath(); g.moveTo(x + .5, h / 2 - bh / 2); g.lineTo(x + .5, h / 2 + bh / 2); g.stroke();
       }
-      // đường ngưỡng
       const ty = h / 2 - ((th + 70) / 70) * (h - 10) / 2;
       g.strokeStyle = '#ffffff66'; g.setLineDash([4, 4]);
       g.beginPath(); g.moveTo(0, ty); g.lineTo(w, ty); g.stroke(); g.setLineDash([]);
     }
 
-    // con trỏ phát
     if (video.currentTime) {
       g.fillStyle = '#fff';
       g.fillRect(video.currentTime / dur * w, 0, 2, h);
@@ -242,10 +236,23 @@
     $('export').disabled = true;
     $('downloadArea').innerHTML = '';
     $('prog').hidden = false; $('prog').value = 0;
+    let ext = engine === 'ffmpeg' ? 'mp4' : 'webm';
     try {
-      const blob = engine === 'ffmpeg' ? await exportWithFFmpeg() : await exportWithRecorder();
+      let blob;
+      if (engine === 'ffmpeg') {
+        try {
+          blob = await exportWithFFmpeg();
+        } catch (e) {
+          console.warn('FFmpeg thất bại, chuyển sang MediaRecorder:', e);
+          log('FFmpeg lỗi: ' + e.message);
+          setStatus('⚠️ Không dùng được FFmpeg.wasm trên trình duyệt này — đang tự chuyển sang MediaRecorder (WebM)…');
+          blob = await exportWithRecorder();
+          ext = 'webm';
+        }
+      } else {
+        blob = await exportWithRecorder();
+      }
       const url = URL.createObjectURL(blob);
-      const ext = engine === 'ffmpeg' ? 'mp4' : 'webm';
       const name = state.file.name.replace(/\.[^.]+$/, '') + '-no-silence.' + ext;
       $('downloadArea').innerHTML = `<a class="dl" href="${url}" download="${name}">⬇︎ Tải ${name} (${fmtSize(blob.size)})</a>`;
       setStatus('✅ Xuất xong!');
@@ -262,18 +269,45 @@
   let ffmpeg = null;
   async function getFFmpeg() {
     if (ffmpeg) return ffmpeg;
+    if (!window.FFmpegWASM || !window.FFmpegUtil) throw new Error('Không tải được thư viện FFmpeg từ CDN.');
     const { FFmpeg } = FFmpegWASM;
     const { toBlobURL } = FFmpegUtil;
-    const base = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+    const coreBase = `https://unpkg.com/@ffmpeg/core@${CORE_VER}/dist/umd`;
+    const libBase = `https://unpkg.com/@ffmpeg/ffmpeg@${FFMPEG_VER}/dist/umd`;
+
     ffmpeg = new FFmpeg();
     ffmpeg.on('log', ({ message }) => log(message));
     ffmpeg.on('progress', ({ progress }) => { $('prog').value = Math.min(1, Math.max(0, progress || 0)); });
-    setStatus('Đang tải FFmpeg.wasm (~30MB, chỉ lần đầu)…');
-    await ffmpeg.load({
-      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
-    });
+
+    setStatus('Đang tải FFmpeg.wasm (~32MB, chỉ lần đầu)…');
+
+    // QUAN TRọNG: @ffmpeg/ffmpeg tự tạo Worker từ file phụ trên CDN
+    // -> trình duyệt chặn vì khác origin. Phải nạp worker qua blob URL cùng origin.
+    const workerName = await findClassWorkerName(libBase);
+    const opts = {
+      coreURL: await toBlobURL(`${coreBase}/ffmpeg-core.js`, 'text/javascript'),
+      wasmURL: await toBlobURL(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm'),
+    };
+    if (workerName) opts.classWorkerURL = await toBlobURL(`${libBase}/${workerName}`, 'text/javascript');
+
+    await ffmpeg.load(opts);
     return ffmpeg;
+  }
+
+  // Tên file worker (ví dụ 814.ffmpeg.js) thay đổi theo phiên bản build,
+  // nên dò trực tiếp trong mã nguồn của ffmpeg.js.
+  let cachedWorkerName;
+  async function findClassWorkerName(libBase) {
+    if (cachedWorkerName !== undefined) return cachedWorkerName;
+    try {
+      const src = await (await fetch(`${libBase}/ffmpeg.js`)).text();
+      const m = src.match(/["'`]([\w.-]*\d+\.ffmpeg\.js)["'`]/) || src.match(/([\w.-]+\.ffmpeg\.js)/);
+      cachedWorkerName = m ? m[1] : '814.ffmpeg.js';
+    } catch (_) {
+      cachedWorkerName = '814.ffmpeg.js';
+    }
+    log('Worker script: ' + cachedWorkerName);
+    return cachedWorkerName;
   }
 
   async function exportWithFFmpeg() {
@@ -300,6 +334,7 @@
     ]);
     const data = await ff.readFile('output.mp4');
     try { await ff.deleteFile(inName); await ff.deleteFile('output.mp4'); } catch (_) {}
+    if (!data || !data.length) throw new Error('FFmpeg không tạo được tệp đầu ra.');
     return new Blob([data.buffer], { type: 'video/mp4' });
   }
 
