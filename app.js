@@ -6,16 +6,17 @@ const $ = (id) => document.getElementById(id);
 
 const LIB_ESM = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm';
 const UTIL_ESM = 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
-const CORE_ST = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';      // 1 luồng
-const CORE_MT = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';   // đa luồng
+const CORE_ST = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+const CORE_MT = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
 
 const state = {
   file: null,
   duration: 0,
   w: 0, h: 0,
-  envelope: null,   // Float32Array dB mỗi frame
-  frameDur: 0.02,   // 20ms
-  keep: [],         // [{start,end}]
+  envelope: null,
+  audio: null,      // AudioBuffer giữ lại để xuất (không phải giải mã lại)
+  frameDur: 0.02,
+  keep: [],
   cancel: false,
 };
 
@@ -30,7 +31,7 @@ fileInput.onchange = () => { if (fileInput.files[0]) loadFile(fileInput.files[0]
 
 const fmtSize = b => b > 1e9 ? (b / 1e9).toFixed(2) + ' GB' : (b / 1e6).toFixed(1) + ' MB';
 const fmtTime = s => {
-  if (!isFinite(s)) return '—';
+  if (!isFinite(s) || s < 0) return '—';
   const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = (s % 60);
   return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + sec.toFixed(1).padStart(4, '0');
 };
@@ -39,7 +40,7 @@ const video = $('video');
 
 function loadFile(f) {
   state.file = f;
-  state.keep = []; state.envelope = null;
+  state.keep = []; state.envelope = null; state.audio = null;
   if (video.src) URL.revokeObjectURL(video.src);
   video.src = URL.createObjectURL(f);
   $('fileInfo').classList.remove('hidden');
@@ -55,7 +56,8 @@ function loadFile(f) {
   };
 }
 
-// Tự chọn thiết lập hợp lý theo nguồn + cảnh báo video quá nặng.
+let turboOk = false;
+
 function applySourceDefaults() {
   const info = $('srcInfo');
   if (!state.h) return;
@@ -65,9 +67,8 @@ function applySourceDefaults() {
   const heavy = state.h > 1440 || (state.w * state.h * state.duration) > 1080 * 1920 * 900;
   let msg = 'Nguồn: ' + state.w + '×' + state.h + ' · ' + fmtTime(state.duration);
   if (heavy) {
-    msg += ' — ⚠️ Rất nặng cho FFmpeg trong trình duyệt. Video 4K dài có thể mất nhiều giờ vì trình duyệt phải giải mã bằng phần mềm (không dùng được GPU). Khuyến nghị: chọn MediaRecorder (xong sau đúng thời lượng giữ lại), hoặc hạ độ phân giải xuống 1080p/720p.';
-    const r = document.querySelector('input[name=engine][value=recorder]');
-    if (r) r.checked = true;
+    msg += ' — video nặng. FFmpeg.wasm sẽ rất chậm với tệp này vì nó giải mã bằng phần mềm; ' +
+      (turboOk ? 'hãy dùng Turbo (tăng tốc phần cứng).' : 'hãy dùng MediaRecorder.');
   }
   if (info) { info.textContent = msg; info.className = heavy ? 'status err' : 'status'; }
 }
@@ -99,6 +100,7 @@ async function analyze() {
     const audio = await ctx.decodeAudioData(buf.slice(0));
     ctx.close();
 
+    state.audio = audio;
     state.duration = Math.max(state.duration || 0, audio.duration);
     st.textContent = 'Đang tính đường bao âm lượng…';
     state.envelope = buildEnvelope(audio, state.frameDur);
@@ -119,7 +121,6 @@ async function analyze() {
   }
 }
 
-// RMS theo khung -> dBFS
 function buildEnvelope(audio, frameDur) {
   const sr = audio.sampleRate;
   const frameLen = Math.max(1, Math.round(sr * frameDur));
@@ -232,7 +233,7 @@ cv.addEventListener('click', e => {
   video.currentTime = (e.clientX - r.left) / r.width * (state.duration || 0);
 });
 
-/* ---------------- 5. Xem trước (bỏ qua khoảng lặng) ---------------- */
+/* ---------------- 5. Xem trước ---------------- */
 video.addEventListener('timeupdate', () => {
   draw();
   if (!$('skipMode').checked || !state.keep.length) return;
@@ -264,14 +265,29 @@ function errText(e) {
 }
 
 const cores = navigator.hardwareConcurrency || 4;
-const iso = $('isoStatus');
-if (iso) {
-  iso.textContent = self.crossOriginIsolated
-    ? '⚡ Chế độ đa luồng đang BẬT — sẽ dùng ' + Math.min(8, cores) + ' luồng CPU.'
-    : 'ℹ️ Đa luồng chưa bật (service worker đang cài). Tải lại trang một lần để nhanh hơn 3–4 lần.';
-}
 
-$('cancel').onclick = () => { state.cancel = true; setStatus('Đang dừng sau đoạn hiện tại…'); };
+// Kiểm tra Turbo (WebCodecs) và chọn sẵn nếu dùng được.
+(async () => {
+  try {
+    const mod = await import('./webcodecs.js?v=8');
+    turboOk = mod.supported();
+  } catch (e) { turboOk = false; }
+  const radio = document.querySelector('input[name=engine][value=turbo]');
+  const note = $('isoStatus');
+  if (turboOk) {
+    if (radio) { radio.disabled = false; radio.checked = true; }
+    if (note) note.textContent = '⚡ Turbo khả dụng: trình duyệt sẽ giải mã và mã hoá bằng phần cứng.';
+  } else {
+    if (radio) { radio.disabled = true; }
+    const r = document.querySelector('input[name=engine][value=recorder]');
+    if (r) r.checked = true;
+    if (note) note.textContent = 'ℹ️ Trình duyệt này không hỗ trợ WebCodecs — dùng MediaRecorder hoặc FFmpeg.wasm' +
+      (self.crossOriginIsolated ? ' (đa luồng đang bật, ' + Math.min(8, cores) + ' luồng).' : '.');
+  }
+  applySourceDefaults();
+})();
+
+$('cancel').onclick = () => { state.cancel = true; setStatus('Đang dừng…'); };
 
 $('export').onclick = async () => {
   if (!state.keep.length) return setStatus('Chưa có đoạn nào để giữ lại.', true);
@@ -281,18 +297,19 @@ $('export').onclick = async () => {
   $('cancel').hidden = false;
   $('downloadArea').innerHTML = '';
   $('prog').hidden = false; $('prog').value = 0;
-  let ext = engine === 'ffmpeg' ? 'mp4' : 'webm';
+  let ext = engine === 'recorder' ? 'webm' : 'mp4';
   const t0 = performance.now();
   try {
     let blob;
-    if (engine === 'ffmpeg') {
+    if (engine === 'turbo') {
+      blob = await exportTurboRun(t0);
+    } else if (engine === 'ffmpeg') {
       try {
         blob = await exportWithFFmpeg();
       } catch (e) {
         if (state.cancel) throw e;
-        console.warn('FFmpeg thất bại, chuyển sang MediaRecorder:', e);
         log('FFmpeg lỗi: ' + errText(e));
-        setStatus('⚠️ Không dùng được FFmpeg.wasm — đang tự chuyển sang MediaRecorder (WebM)…');
+        setStatus('⚠️ Không dùng được FFmpeg.wasm — chuyển sang MediaRecorder…');
         ffmpeg = null;
         blob = await exportWithRecorder();
         ext = 'webm';
@@ -314,12 +331,39 @@ $('export').onclick = async () => {
   }
 };
 
-/* --- 6a. FFmpeg.wasm --- */
+/* --- 6a. Turbo: WebCodecs (tăng tốc phần cứng) --- */
+async function exportTurboRun(t0) {
+  const mod = await import('./webcodecs.js?v=8');
+  if (!mod.supported()) throw new Error('Trình duyệt không hỗ trợ WebCodecs.');
+  const outH = parseInt($('scale').value, 10) || 0;
+  const crf = parseFloat($('crf').value);
+  const quality = Math.max(0.3, Math.min(1.3, (34 - crf) / 12));
+  const speed = parseFloat($('speed').value) || 2;
+
+  return await mod.exportTurbo({
+    srcUrl: video.src,
+    audioBuffer: state.audio,
+    keep: state.keep,
+    outHeight: outH,
+    quality,
+    speed,
+    onLog: log,
+    onProgress: (p, note) => {
+      $('prog').value = p;
+      const el = (performance.now() - t0) / 1000;
+      const eta = p > 0.02 && p < 1 ? ' · còn ~' + fmtTime(el / p - el) : '';
+      setStatus('Đang xuất bằng Turbo — ' + (p * 100).toFixed(1) + '%' + eta + (note ? ' · ' + note : ''));
+    },
+    shouldCancel: () => state.cancel,
+  });
+}
+
+/* --- 6b. FFmpeg.wasm --- */
 let ffmpeg = null;
 let ffUtil = null;
 let ffThreads = 1;
 const probe = { w: 0, h: 0, fps: 0 };
-let segProgress = 0;   // tiến độ của đoạn đang mã hoá (0..1)
+let segProgress = 0;
 
 function handleFfLog(msg) {
   log(msg);
@@ -335,21 +379,17 @@ async function loadCore(FFmpeg, util, base, mt) {
   inst.on('progress', (e) => { segProgress = Math.min(1, Math.max(0, e.progress || 0)); });
 
   setStatus('Đang tải FFmpeg core' + (mt ? ' đa luồng' : '') + ' (~32MB, chỉ lần đầu)…');
-  log('Tải ffmpeg-core.js' + (mt ? ' (mt)' : '') + '…');
   const opts = {
     coreURL: await util.toBlobURL(base + '/ffmpeg-core.js', 'text/javascript'),
     wasmURL: await util.toBlobURL(base + '/ffmpeg-core.wasm', 'application/wasm'),
     classWorkerURL: new URL('ffmpeg-worker.js', document.baseURI).href,
   };
   if (mt) {
-    log('Tải ffmpeg-core.worker.js…');
     opts.workerURL = await util.toBlobURL(base + '/ffmpeg-core.worker.js', 'text/javascript');
     ffThreads = Math.max(1, Math.min(8, cores));
   } else {
     ffThreads = 1;
   }
-
-  log('Gọi ffmpeg.load()…');
   const ok = await inst.load(opts);
   if (ok === false) throw new Error('ffmpeg.load() trả về false.');
   log('FFmpeg sẵn sàng — số luồng: ' + ffThreads);
@@ -359,28 +399,16 @@ async function loadCore(FFmpeg, util, base, mt) {
 async function getFFmpeg() {
   if (ffmpeg) return ffmpeg;
   log('Nạp thư viện ffmpeg (ESM)…');
-  const [{ FFmpeg }, util] = await Promise.all([
-    import(LIB_ESM + '/index.js'),
-    import(UTIL_ESM),
-  ]);
+  const [{ FFmpeg }, util] = await Promise.all([import(LIB_ESM + '/index.js'), import(UTIL_ESM)]);
   ffUtil = util;
-  log('crossOriginIsolated = ' + !!self.crossOriginIsolated);
-
   if (self.crossOriginIsolated) {
-    try {
-      ffmpeg = await loadCore(FFmpeg, util, CORE_MT, true);
-      return ffmpeg;
-    } catch (e) {
-      log('Core đa luồng lỗi (' + errText(e) + ') — quay lại core 1 luồng…');
-    }
+    try { ffmpeg = await loadCore(FFmpeg, util, CORE_MT, true); return ffmpeg; }
+    catch (e) { log('Core đa luồng lỗi (' + errText(e) + ') — quay lại core 1 luồng…'); }
   }
   ffmpeg = await loadCore(FFmpeg, util, CORE_ST, false);
   return ffmpeg;
 }
 
-/* Mã hoá từng đoạn riêng rồi nối lại (concat, không mã hoá lại).
- * Lợi ích: thấy tiến độ tức thì, không giải mã phần bị cắt bỏ, giải phóng bộ nhớ sau mỗi đoạn,
- * và có thể dừng giữa chừng. Điểm cắt vẫn chính xác tới frame vì ffmpeg seek chính xác khi transcode. */
 async function exportWithFFmpeg() {
   const ff = await getFFmpeg();
   const inExt = (state.file.name.match(/\.[^.]+$/) || ['.mp4'])[0];
@@ -389,7 +417,6 @@ async function exportWithFFmpeg() {
   setStatus('Đang nạp video vào bộ nhớ ảo…');
   await ff.writeFile(inName, await ffUtil.fetchFile(state.file));
 
-  // Thăm dò thông số nguồn (lệnh này thoát với lỗi — bình thường).
   setStatus('Đang đọc thông tin video…');
   try { await ff.exec(['-hide_banner', '-i', inName]); } catch (_) {}
 
@@ -400,12 +427,8 @@ async function exportWithFFmpeg() {
   const srcFps = probe.fps || 0;
 
   const vf = [];
-  // Chỉ hạ fps, không bao giờ tăng (tăng fps = nhân thêm việc vô ích).
   if (fpsSel > 0 && (!srcFps || fpsSel < srcFps)) vf.push('fps=' + fpsSel);
-  else if (fpsSel > 0) log('Bỏ qua fps=' + fpsSel + ' vì nguồn chỉ ' + srcFps + ' fps.');
-  // Chỉ thu nhỏ, không phóng to.
   if (scaleSel > 0 && (!srcH || scaleSel < srcH)) vf.push('scale=-2:' + scaleSel + ':flags=fast_bilinear');
-  else if (scaleSel > 0) log('Bỏ qua scale vì nguồn chỉ cao ' + srcH + 'px.');
 
   const total = state.keep.reduce((a, s) => a + (s.end - s.start), 0);
   let done = 0;
@@ -419,59 +442,45 @@ async function exportWithFFmpeg() {
     const out = 'p' + i + '.mp4';
     segProgress = 0;
 
-    const args = ['-hide_banner', '-nostdin'];
-    args.push('-ss', s.start.toFixed(3), '-i', inName, '-t', dur.toFixed(3));
+    const args = ['-hide_banner', '-nostdin', '-ss', s.start.toFixed(3), '-i', inName, '-t', dur.toFixed(3)];
     if (ffThreads > 1) args.push('-threads', String(ffThreads));
     if (vf.length) args.push('-vf', vf.join(','));
     args.push(
       '-c:v', 'libx264', '-preset', preset, '-crf', String(crf), '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
-      '-sn', '-dn', '-map_metadata', '-1',
-      '-avoid_negative_ts', 'make_zero',
-      out
+      '-sn', '-dn', '-map_metadata', '-1', '-avoid_negative_ts', 'make_zero', out
     );
 
-    // Cập nhật tiến độ tổng + ước lượng thời gian còn lại trong lúc đang chạy.
     const timer = setInterval(() => {
       const p = Math.min(1, (done + segProgress * dur) / total);
       $('prog').value = p;
       const el = (performance.now() - t0) / 1000;
       const eta = p > 0.01 ? ' · còn ~' + fmtTime(el / p - el) : '';
-      setStatus('Đang mã hoá đoạn ' + (i + 1) + '/' + state.keep.length +
-        ' — ' + (p * 100).toFixed(1) + '%' + eta);
+      setStatus('Đang mã hoá đoạn ' + (i + 1) + '/' + state.keep.length + ' — ' + (p * 100).toFixed(1) + '%' + eta);
     }, 500);
 
-    try {
-      await ff.exec(args);
-    } finally {
-      clearInterval(timer);
-    }
-
+    try { await ff.exec(args); } finally { clearInterval(timer); }
     parts.push(out);
     done += dur;
   }
 
   if (state.cancel) throw new Error('Đã dừng theo yêu cầu.');
 
-  setStatus('Đang nối ' + parts.length + ' đoạn lại (không mã hoá lại, rất nhanh)…');
+  setStatus('Đang nối ' + parts.length + ' đoạn lại…');
   const list = parts.map(p => "file '" + p + "'").join('\n') + '\n';
   await ff.writeFile('list.txt', new TextEncoder().encode(list));
-  await ff.exec(['-hide_banner', '-f', 'concat', '-safe', '0', '-i', 'list.txt',
-    '-c', 'copy', '-movflags', '+faststart', 'output.mp4']);
+  await ff.exec(['-hide_banner', '-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', '-movflags', '+faststart', 'output.mp4']);
 
   const data = await ff.readFile('output.mp4');
   try {
-    await ff.deleteFile(inName);
-    await ff.deleteFile('list.txt');
-    await ff.deleteFile('output.mp4');
+    await ff.deleteFile(inName); await ff.deleteFile('list.txt'); await ff.deleteFile('output.mp4');
     for (const p of parts) await ff.deleteFile(p);
   } catch (_) {}
-
   if (!data || !data.length) throw new Error('FFmpeg không tạo được tệp đầu ra.');
   return new Blob([data.buffer], { type: 'video/mp4' });
 }
 
-/* --- 6b. MediaRecorder: phát thật & ghi lại, tạm dừng ở khoảng lặng --- */
+/* --- 6c. MediaRecorder --- */
 async function exportWithRecorder() {
   setStatus('Đang ghi theo thời gian thực (giữ tab này ở phía trước)…');
   const v = document.createElement('video');
