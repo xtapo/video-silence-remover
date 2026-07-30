@@ -4,11 +4,12 @@
 
 const $ = (id) => document.getElementById(id);
 
-// Dùng bản ESM của ffmpeg.wasm: worker của thư viện là module worker,
+// Bản ESM của ffmpeg.wasm: worker của thư viện là module worker,
 // nên shim cùng origin (ffmpeg-worker.js) cũng phải là ES module.
 const LIB_ESM = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm';
 const UTIL_ESM = 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
-const CORE_ESM = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+const CORE_ST = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';      // 1 luồng
+const CORE_MT = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';   // đa luồng
 
 const state = {
   file: null,
@@ -241,6 +242,15 @@ function errText(e) {
   try { return JSON.stringify(e); } catch (_) { return String(e); }
 }
 
+// Trạng thái đa luồng
+const cores = navigator.hardwareConcurrency || 4;
+const iso = $('isoStatus');
+if (iso) {
+  iso.textContent = self.crossOriginIsolated
+    ? '⚡ Chế độ đa luồng đang BẬT — sẽ dùng ' + Math.min(8, cores) + ' luồng CPU.'
+    : 'ℹ️ Đa luồng chưa bật (service worker đang cài). Tải lại trang một lần để nhanh hơn 3–4 lần.';
+}
+
 $('export').onclick = async () => {
   if (!state.keep.length) return setStatus('Chưa có đoạn nào để giữ lại.', true);
   const engine = document.querySelector('input[name=engine]:checked').value;
@@ -248,6 +258,7 @@ $('export').onclick = async () => {
   $('downloadArea').innerHTML = '';
   $('prog').hidden = false; $('prog').value = 0;
   let ext = engine === 'ffmpeg' ? 'mp4' : 'webm';
+  const t0 = performance.now();
   try {
     let blob;
     if (engine === 'ffmpeg') {
@@ -267,7 +278,7 @@ $('export').onclick = async () => {
     const url = URL.createObjectURL(blob);
     const name = state.file.name.replace(/\.[^.]+$/, '') + '-no-silence.' + ext;
     $('downloadArea').innerHTML = '<a class="dl" href="' + url + '" download="' + name + '">⬇︎ Tải ' + name + ' (' + fmtSize(blob.size) + ')</a>';
-    setStatus('✅ Xuất xong!');
+    setStatus('✅ Xuất xong sau ' + ((performance.now() - t0) / 1000).toFixed(1) + ' giây!');
   } catch (e) {
     console.error(e);
     setStatus('❌ Lỗi khi xuất: ' + errText(e), true);
@@ -280,6 +291,34 @@ $('export').onclick = async () => {
 /* --- 6a. FFmpeg.wasm (ESM + module worker cùng origin) --- */
 let ffmpeg = null;
 let ffUtil = null;
+let ffThreads = 1;
+
+async function loadCore(FFmpeg, util, base, mt) {
+  const inst = new FFmpeg();
+  inst.on('log', (e) => log(e.message));
+  inst.on('progress', (e) => { $('prog').value = Math.min(1, Math.max(0, e.progress || 0)); });
+
+  setStatus('Đang tải FFmpeg core' + (mt ? ' đa luồng' : '') + ' (~32MB, chỉ lần đầu)…');
+  log('Tải ffmpeg-core.js' + (mt ? ' (mt)' : '') + '…');
+  const opts = {
+    coreURL: await util.toBlobURL(base + '/ffmpeg-core.js', 'text/javascript'),
+    wasmURL: await util.toBlobURL(base + '/ffmpeg-core.wasm', 'application/wasm'),
+    classWorkerURL: new URL('ffmpeg-worker.js', document.baseURI).href,
+  };
+  if (mt) {
+    log('Tải ffmpeg-core.worker.js…');
+    opts.workerURL = await util.toBlobURL(base + '/ffmpeg-core.worker.js', 'text/javascript');
+    ffThreads = Math.max(1, Math.min(8, cores));
+  } else {
+    ffThreads = 1;
+  }
+
+  log('Gọi ffmpeg.load()…');
+  const ok = await inst.load(opts);
+  if (ok === false) throw new Error('ffmpeg.load() trả về false.');
+  log('FFmpeg sẵn sàng — số luồng: ' + ffThreads);
+  return inst;
+}
 
 async function getFFmpeg() {
   if (ffmpeg) return ffmpeg;
@@ -290,26 +329,17 @@ async function getFFmpeg() {
     import(UTIL_ESM),
   ]);
   ffUtil = util;
+  log('crossOriginIsolated = ' + !!self.crossOriginIsolated);
 
-  const inst = new FFmpeg();
-  inst.on('log', (e) => log(e.message));
-  inst.on('progress', (e) => { $('prog').value = Math.min(1, Math.max(0, e.progress || 0)); });
-
-  setStatus('Đang tải FFmpeg core (~32MB, chỉ lần đầu)…');
-  log('Tải ffmpeg-core.js (esm)…');
-  const coreURL = await util.toBlobURL(CORE_ESM + '/ffmpeg-core.js', 'text/javascript');
-  log('Tải ffmpeg-core.wasm…');
-  const wasmURL = await util.toBlobURL(CORE_ESM + '/ffmpeg-core.wasm', 'application/wasm');
-
-  // Worker phải cùng origin, nếu không trình duyệt chặn new Worker().
-  const classWorkerURL = new URL('ffmpeg-worker.js', document.baseURI).href;
-  log('Module worker: ' + classWorkerURL);
-
-  log('Gọi ffmpeg.load()…');
-  const ok = await inst.load({ coreURL, wasmURL, classWorkerURL });
-  if (ok === false) throw new Error('ffmpeg.load() trả về false.');
-  log('FFmpeg đã sẵn sàng.');
-  ffmpeg = inst;
+  if (self.crossOriginIsolated) {
+    try {
+      ffmpeg = await loadCore(FFmpeg, util, CORE_MT, true);
+      return ffmpeg;
+    } catch (e) {
+      log('Core đa luồng lỗi (' + errText(e) + ') — quay lại core 1 luồng…');
+    }
+  }
+  ffmpeg = await loadCore(FFmpeg, util, CORE_ST, false);
   return ffmpeg;
 }
 
@@ -324,17 +354,30 @@ async function exportWithFFmpeg() {
     .map(s => 'between(t,' + s.start.toFixed(3) + ',' + s.end.toFixed(3) + ')')
     .join('+');
   const crf = $('crf').value, preset = $('preset').value;
+  const scale = $('scale').value, fps = $('fps').value;
 
-  setStatus('Đang mã hoá ' + state.keep.length + ' đoạn bằng FFmpeg…');
-  await ff.exec([
-    '-i', inName,
-    '-vf', "select='" + expr + "',setpts=N/FRAME_RATE/TB",
+  const vf = ["select='" + expr + "'", 'setpts=N/FRAME_RATE/TB'];
+  if (fps !== '0') vf.push('fps=' + fps);
+  if (scale !== '0') vf.push('scale=-2:' + scale);
+
+  const args = ['-i', inName];
+  if (ffThreads > 1) args.push('-threads', String(ffThreads));
+  args.push(
+    '-vf', vf.join(','),
     '-af', "aselect='" + expr + "',asetpts=N/SR/TB",
     '-c:v', 'libx264', '-preset', preset, '-crf', String(crf),
-    '-c:a', 'aac', '-b:a', '160k',
+    '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '128k',
     '-movflags', '+faststart',
-    'output.mp4',
-  ]);
+    '-sn', '-dn',
+    'output.mp4'
+  );
+
+  setStatus('Đang mã hoá ' + state.keep.length + ' đoạn bằng FFmpeg (' + preset +
+    (ffThreads > 1 ? ', ' + ffThreads + ' luồng' : ', 1 luồng') + ')…');
+  log('ffmpeg ' + args.join(' '));
+  await ff.exec(args);
+
   const data = await ff.readFile('output.mp4');
   try { await ff.deleteFile(inName); await ff.deleteFile('output.mp4'); } catch (_) {}
   if (!data || !data.length) throw new Error('FFmpeg không tạo được tệp đầu ra.');
