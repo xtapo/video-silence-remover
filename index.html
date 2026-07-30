@@ -4,9 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Silence Remover — Xoá khoảng lặng video ngay trên trình duyệt</title>
-<link rel="stylesheet" href="styles.css?v=6" />
+<link rel="stylesheet" href="styles.css?v=7" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✂️</text></svg>" />
-<script src="coi-serviceworker.js?v=6"></script>
+<script src="coi-serviceworker.js?v=7"></script>
 </head>
 <body>
 <header>
@@ -68,9 +68,10 @@
   <!-- 4. Xuất -->
   <section class="card" id="exportCard" hidden>
     <h2>4. Xuất video đã cắt</h2>
+    <div id="srcInfo" class="status"></div>
     <div class="row">
-      <label class="chk"><input type="radio" name="engine" value="ffmpeg" checked /> FFmpeg.wasm — MP4 (chính xác, nhanh hơn thời gian thực)</label>
-      <label class="chk"><input type="radio" name="engine" value="recorder" /> MediaRecorder — WebM (luôn chạy được, ghi thời gian thực)</label>
+      <label class="chk"><input type="radio" name="engine" value="ffmpeg" checked /> FFmpeg.wasm — MP4 (chính xác, nặng CPU)</label>
+      <label class="chk"><input type="radio" name="engine" value="recorder" /> MediaRecorder — WebM (dùng giải mã phần cứng, xong sau đúng thời lượng giữ lại)</label>
     </div>
     <div id="isoStatus" class="status"></div>
     <div class="grid">
@@ -81,16 +82,17 @@
           <option value="veryfast">Cân bằng — veryfast</option>
           <option value="medium">Nén tốt, chậm — medium</option>
         </select>
-        <small>ultrafast nhanh gấp 3–5 lần medium; hình ảnh gần như không đổi, chỉ tệp nặng hơn.</small>
+        <small>Chỉ ảnh hưởng mức nén, không ảnh hưởng điểm cắt.</small>
       </label>
       <label>Độ phân giải đầu ra
         <select id="scale">
           <option value="0" selected>Giữ nguyên</option>
+          <option value="1440">1440p</option>
           <option value="1080">1080p</option>
           <option value="720">720p</option>
           <option value="480">480p</option>
         </select>
-        <small>Hạ 1080p xuống 720p tiết kiệm khoảng một nửa thời gian.</small>
+        <small>Video 4K sẽ tự đề xuất 1080p. Chỉ thu nhỏ, không bao giờ phóng to.</small>
       </label>
       <label>Khung hình / giây
         <select id="fps">
@@ -98,14 +100,17 @@
           <option value="30">30 fps</option>
           <option value="24">24 fps</option>
         </select>
-        <small>Video quay 60 fps hạ về 30 fps sẽ nhanh gấp đôi.</small>
+        <small>Chỉ có tác dụng khi nguồn cao hơn; nguồn thấp hơn sẽ được bỏ qua.</small>
       </label>
       <label>Chất lượng (CRF) <span class="val" id="crfVal">23</span>
         <input type="range" id="crf" min="18" max="32" step="1" value="23" />
-        <small>Số nhỏ = đẹp hơn, tệp nặng hơn. 23 là mức cân bằng.</small>
+        <small>Số nhỏ = đẹp hơn, tệp nặng hơn.</small>
       </label>
     </div>
-    <button id="export" class="primary">Xuất video</button>
+    <div class="row">
+      <button id="export" class="primary">Xuất video</button>
+      <button id="cancel" hidden>⏹ Dừng</button>
+    </div>
     <progress id="prog" max="1" value="0" hidden></progress>
     <div id="exportStatus" class="status"></div>
     <div id="downloadArea"></div>
@@ -115,9 +120,9 @@
 
 <footer>
   <p>Không upload · Không theo dõi · Mã nguồn mở (MIT) · <a href="https://github.com/xtapo/video-silence-remover">GitHub</a></p>
-  <p>Phiên bản <b id="buildId">esm-6</b> — nếu bạn thấy số khác, hãy tải lại trang bằng Ctrl/Cmd + Shift + R.</p>
+  <p>Phiên bản <b id="buildId">esm-7</b> — nếu bạn thấy số khác, hãy tải lại trang bằng Ctrl/Cmd + Shift + R.</p>
 </footer>
 
-<script type="module" src="app.js?v=6"></script>
+<script type="module" src="app.js?v=7"></script>
 </body>
 </html>
