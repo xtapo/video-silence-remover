@@ -68,8 +68,8 @@
   <section class="card" id="exportCard" hidden>
     <h2>4. Xuất video đã cắt</h2>
     <div class="row">
-      <label class="chk"><input type="radio" name="engine" value="ffmpeg" checked /> FFmpeg.wasm — xuất MP4 (chất lượng cao, chậm hơn)</label>
-      <label class="chk"><input type="radio" name="engine" value="recorder" /> MediaRecorder — xuất WebM (nhanh, ghi theo thời gian thực)</label>
+      <label class="chk"><input type="radio" name="engine" value="recorder" checked /> MediaRecorder — WebM (luôn chạy được, ghi thời gian thực)</label>
+      <label class="chk"><input type="radio" name="engine" value="ffmpeg" /> FFmpeg.wasm — MP4 (chất lượng cao, tải ~32MB lần đầu)</label>
     </div>
     <div class="grid">
       <label>Chất lượng MP4 (CRF) <span class="val" id="crfVal">23</span>
@@ -95,8 +95,6 @@
   <p>Không upload · Không theo dõi · Mã nguồn mở (MIT) · <a href="https://github.com/xtapo/video-silence-remover">GitHub</a></p>
 </footer>
 
-<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
-<script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
-<script src="app.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>
