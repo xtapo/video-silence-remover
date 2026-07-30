@@ -6,9 +6,8 @@
 
   const FFMPEG_VER = '0.12.10';
   const CORE_VER = '0.12.6';
-  const CDN = 'https://unpkg.com/';
-  const LIB_BASE = CDN + '@ffmpeg/ffmpeg@' + FFMPEG_VER + '/dist/umd';
-  const CORE_BASE = CDN + '@ffmpeg/core@' + CORE_VER + '/dist/umd';
+  const LIB_BASE = 'https://unpkg.com/@ffmpeg/ffmpeg@' + FFMPEG_VER + '/dist/umd';
+  const CORE_BASE = 'https://unpkg.com/@ffmpeg/core@' + CORE_VER + '/dist/umd';
 
   const state = {
     file: null,
@@ -90,7 +89,7 @@
     } catch (e) {
       console.error(e);
       st.className = 'status err';
-      st.textContent = '❌ Không giải mã được âm thanh của tệp này (' + e.message + '). Thử định dạng MP4/WebM có tiếng.';
+      st.textContent = '❌ Không giải mã được âm thanh của tệp này (' + errText(e) + '). Thử định dạng MP4/WebM có tiếng.';
     } finally {
       $('analyze').disabled = false;
     }
@@ -232,6 +231,15 @@
   const log = (m) => { logEl.hidden = false; logEl.textContent += m + '\n'; logEl.scrollTop = logEl.scrollHeight; };
   const setStatus = (m, err) => { const s = $('exportStatus'); s.className = 'status' + (err ? ' err' : ''); s.textContent = m; };
 
+  // Lỗi từ worker thường không phải Error -> tránh hiển thị "undefined".
+  function errText(e) {
+    if (!e) return 'không rõ nguyên nhân';
+    if (typeof e === 'string') return e;
+    if (e.message) return e.message;
+    if (e.type) return 'worker lỗi (' + e.type + ')';
+    try { return JSON.stringify(e); } catch (_) { return String(e); }
+  }
+
   $('export').onclick = async () => {
     if (!state.keep.length) return setStatus('Chưa có đoạn nào để giữ lại.', true);
     const engine = document.querySelector('input[name=engine]:checked').value;
@@ -246,8 +254,9 @@
           blob = await exportWithFFmpeg();
         } catch (e) {
           console.warn('FFmpeg thất bại, chuyển sang MediaRecorder:', e);
-          log('FFmpeg lỗi: ' + e.message);
+          log('FFmpeg lỗi: ' + errText(e));
           setStatus('⚠️ Không dùng được FFmpeg.wasm — đang tự chuyển sang MediaRecorder (WebM)…');
+          ffmpeg = null;
           blob = await exportWithRecorder();
           ext = 'webm';
         }
@@ -260,36 +269,22 @@
       setStatus('✅ Xuất xong!');
     } catch (e) {
       console.error(e);
-      setStatus('❌ Lỗi khi xuất: ' + e.message, true);
+      setStatus('❌ Lỗi khi xuất: ' + errText(e), true);
     } finally {
       $('export').disabled = false;
       $('prog').hidden = true;
     }
   };
 
-  // --- 6a. FFmpeg.wasm ---
+  /* --- 6a. FFmpeg.wasm ---
+   * Worker được tạo từ ffmpeg-worker.js (cùng origin) thay vì file trên CDN,
+   * vì trình duyệt không cho phép new Worker() với script khác origin.
+   */
   let ffmpeg = null;
-
-  // @ffmpeg/ffmpeg tự tạo Worker từ một file phụ trên CDN (ví dụ 814.ffmpeg.js).
-  // Trình duyệt chặn vì khác origin -> phải nạp worker qua blob URL cùng origin.
-  let cachedWorkerName;
-  async function findClassWorkerName() {
-    if (cachedWorkerName !== undefined) return cachedWorkerName;
-    cachedWorkerName = '814.ffmpeg.js';
-    try {
-      const src = await (await fetch(LIB_BASE + '/ffmpeg.js')).text();
-      const m = src.match(/["'`]([A-Za-z0-9_.-]*[0-9]+\.ffmpeg\.js)["'`]/);
-      if (m) cachedWorkerName = m[1];
-    } catch (err) {
-      log('Không dò được tên worker, dùng mặc định.');
-    }
-    log('Worker script: ' + cachedWorkerName);
-    return cachedWorkerName;
-  }
 
   async function getFFmpeg() {
     if (ffmpeg) return ffmpeg;
-    if (!window.FFmpegWASM || !window.FFmpegUtil) throw new Error('Không tải được thư viện FFmpeg từ CDN.');
+    if (!window.FFmpegWASM || !window.FFmpegWASM.FFmpeg) throw new Error('Không tải được thư viện FFmpeg từ CDN.');
     const FFmpeg = window.FFmpegWASM.FFmpeg;
     const toBlobURL = window.FFmpegUtil.toBlobURL;
 
@@ -297,16 +292,23 @@
     inst.on('log', (e) => log(e.message));
     inst.on('progress', (e) => { $('prog').value = Math.min(1, Math.max(0, e.progress || 0)); });
 
-    setStatus('Đang tải FFmpeg.wasm (~32MB, chỉ lần đầu)…');
-    const workerName = await findClassWorkerName();
-    const opts = {
-      coreURL: await toBlobURL(CORE_BASE + '/ffmpeg-core.js', 'text/javascript'),
-      wasmURL: await toBlobURL(CORE_BASE + '/ffmpeg-core.wasm', 'application/wasm'),
-      classWorkerURL: await toBlobURL(LIB_BASE + '/' + workerName, 'text/javascript'),
-    };
+    setStatus('Đang tải FFmpeg core (~32MB, chỉ lần đầu)…');
+    log('Tải ffmpeg-core.js…');
+    const coreURL = await toBlobURL(CORE_BASE + '/ffmpeg-core.js', 'text/javascript');
+    log('Tải ffmpeg-core.wasm…');
+    const wasmURL = await toBlobURL(CORE_BASE + '/ffmpeg-core.wasm', 'application/wasm');
+    const classWorkerURL = new URL('ffmpeg-worker.js', document.baseURI).href;
+    log('Worker (cùng origin): ' + classWorkerURL);
 
-    const ok = await inst.load(opts);
-    if (ok === false) throw new Error('FFmpeg.load() thất bại.');
+    log('Gọi ffmpeg.load()…');
+    let ok;
+    try {
+      ok = await inst.load({ coreURL, wasmURL, classWorkerURL });
+    } catch (e) {
+      throw new Error('ffmpeg.load() thất bại: ' + errText(e));
+    }
+    if (ok === false) throw new Error('ffmpeg.load() trả về false.');
+    log('FFmpeg đã sẵn sàng.');
     ffmpeg = inst;
     return ffmpeg;
   }
