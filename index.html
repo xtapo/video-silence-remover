@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Silence Remover — Xoá khoảng lặng video ngay trên trình duyệt</title>
+<link rel="stylesheet" href="styles.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✂️</text></svg>" />
+</head>
+<body>
+<header>
+  <h1>✂️ Silence Remover</h1>
+  <p class="sub">Phát hiện &amp; xoá khoảng lặng trong video. Chạy <b>100% trên trình duyệt</b> — video của bạn không bao giờ được tải lên server.</p>
+</header>
+
+<main>
+  <!-- 1. Tải video -->
+  <section class="card">
+    <h2>1. Chọn video</h2>
+    <div id="drop" class="drop">
+      <input type="file" id="file" accept="video/*,audio/*" hidden />
+      <p>Kéo thả video vào đây hoặc <button class="link" id="browse">chọn tệp</button></p>
+      <small>MP4, WebM, MOV, MKV… Tệp chỉ nằm trong bộ nhớ máy bạn.</small>
+    </div>
+    <div id="fileInfo" class="file-info hidden"></div>
+  </section>
+
+  <!-- 2. Tham số -->
+  <section class="card" id="settingsCard" hidden>
+    <h2>2. Thiết lập phát hiện im lặng</h2>
+    <div class="grid">
+      <label>Ngưỡng âm lượng <span class="val" id="thVal">-40 dB</span>
+        <input type="range" id="threshold" min="-70" max="-10" step="1" value="-40" />
+        <small>Âm thanh nhỏ hơn ngưỡng này được coi là im lặng.</small>
+      </label>
+      <label>Độ dài im lặng tối thiểu <span class="val" id="minSilVal">0.50 s</span>
+        <input type="range" id="minSilence" min="0.1" max="3" step="0.05" value="0.5" />
+        <small>Khoảng lặng ngắn hơn sẽ được giữ lại.</small>
+      </label>
+      <label>Đệm quanh tiếng nói <span class="val" id="padVal">0.10 s</span>
+        <input type="range" id="padding" min="0" max="1" step="0.01" value="0.1" />
+        <small>Chừa thêm một chút trước/sau mỗi đoạn nói để không bị cụt tiếng.</small>
+      </label>
+      <label>Đoạn giữ tối thiểu <span class="val" id="minKeepVal">0.20 s</span>
+        <input type="range" id="minKeep" min="0.05" max="1" step="0.05" value="0.2" />
+        <small>Bỏ qua các mẩu nói quá ngắn (tiếng động lạ).</small>
+      </label>
+    </div>
+    <button id="analyze" class="primary">Phân tích âm thanh</button>
+    <div id="analyzeStatus" class="status"></div>
+  </section>
+
+  <!-- 3. Kết quả + xem trước -->
+  <section class="card" id="resultCard" hidden>
+    <h2>3. Xem trước kết quả</h2>
+    <div id="stats" class="stats"></div>
+    <canvas id="timeline" height="90"></canvas>
+    <div class="legend"><span class="sw keep"></span> Giữ lại <span class="sw cut"></span> Cắt bỏ <span class="sw cursor"></span> Vị trí phát</div>
+    <video id="video" controls playsinline></video>
+    <div class="row">
+      <button id="playPreview" class="primary">▶︎ Phát bản đã cắt</button>
+      <button id="stopPreview">■ Dừng</button>
+      <label class="chk"><input type="checkbox" id="skipMode" checked /> Bỏ qua khoảng lặng khi phát</label>
+    </div>
+  </section>
+
+  <!-- 4. Xuất -->
+  <section class="card" id="exportCard" hidden>
+    <h2>4. Xuất video đã cắt</h2>
+    <div class="row">
+      <label class="chk"><input type="radio" name="engine" value="ffmpeg" checked /> FFmpeg.wasm — xuất MP4 (chất lượng cao, chậm hơn)</label>
+      <label class="chk"><input type="radio" name="engine" value="recorder" /> MediaRecorder — xuất WebM (nhanh, ghi theo thời gian thực)</label>
+    </div>
+    <div class="grid">
+      <label>Chất lượng MP4 (CRF) <span class="val" id="crfVal">23</span>
+        <input type="range" id="crf" min="18" max="32" step="1" value="23" />
+      </label>
+      <label>Tốc độ mã hoá
+        <select id="preset">
+          <option value="ultrafast">ultrafast</option>
+          <option value="veryfast" selected>veryfast</option>
+          <option value="medium">medium</option>
+        </select>
+      </label>
+    </div>
+    <button id="export" class="primary">Xuất video</button>
+    <progress id="prog" max="1" value="0" hidden></progress>
+    <div id="exportStatus" class="status"></div>
+    <div id="downloadArea"></div>
+    <pre id="log" class="log" hidden></pre>
+  </section>
+</main>
+
+<footer>
+  <p>Không upload · Không theo dõi · Mã nguồn mở (MIT) · <a href="https://github.com/xtapo/video-silence-remover">GitHub</a></p>
+</footer>
+
+<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
