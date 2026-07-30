@@ -6,6 +6,9 @@
 
   const FFMPEG_VER = '0.12.10';
   const CORE_VER = '0.12.6';
+  const CDN = 'https://unpkg.com/';
+  const LIB_BASE = CDN + '@ffmpeg/ffmpeg@' + FFMPEG_VER + '/dist/umd';
+  const CORE_BASE = CDN + '@ffmpeg/core@' + CORE_VER + '/dist/umd';
 
   const state = {
     file: null,
@@ -13,8 +16,6 @@
     envelope: null,   // Float32Array dB mỗi frame
     frameDur: 0.02,   // 20ms
     keep: [],         // [{start,end}]
-    previewing: false,
-    segIndex: 0,
   };
 
   /* ---------------- 1. Nhận file ---------------- */
@@ -41,7 +42,7 @@
     if (video.src) URL.revokeObjectURL(video.src);
     video.src = URL.createObjectURL(f);
     $('fileInfo').classList.remove('hidden');
-    $('fileInfo').textContent = `📄 ${f.name} · ${fmtSize(f.size)}`;
+    $('fileInfo').textContent = '📄 ' + f.name + ' · ' + fmtSize(f.size);
     $('settingsCard').hidden = false;
     $('resultCard').hidden = true;
     $('exportCard').hidden = true;
@@ -127,7 +128,8 @@
     const loud = new Uint8Array(env.length);
     for (let i = 0; i < env.length; i++) loud[i] = env[i] > th ? 1 : 0;
 
-    let segs = [], cur = null;
+    const segs = [];
+    let cur = null;
     for (let i = 0; i < loud.length; i++) {
       if (loud[i]) { if (!cur) cur = { start: i * fd, end: (i + 1) * fd }; else cur.end = (i + 1) * fd; }
       else if (cur) { segs.push(cur); cur = null; }
@@ -138,7 +140,7 @@
     for (const s of segs) {
       const last = merged[merged.length - 1];
       if (last && s.start - last.end < minSil) last.end = s.end;
-      else merged.push({ ...s });
+      else merged.push({ start: s.start, end: s.end });
     }
 
     const keep = [];
@@ -158,11 +160,11 @@
     const dur = state.duration || 1;
     const kept = state.keep.reduce((a, s) => a + (s.end - s.start), 0);
     const removed = Math.max(0, dur - kept);
-    $('stats').innerHTML = `
-      <div><b>${fmtTime(dur)}</b>Thời lượng gốc</div>
-      <div><b>${fmtTime(kept)}</b>Sau khi cắt</div>
-      <div><b>${fmtTime(removed)}</b>Đã loại bỏ (${(removed / dur * 100).toFixed(1)}%)</div>
-      <div><b>${state.keep.length}</b>Số đoạn giữ lại</div>`;
+    $('stats').innerHTML =
+      '<div><b>' + fmtTime(dur) + '</b>Thời lượng gốc</div>' +
+      '<div><b>' + fmtTime(kept) + '</b>Sau khi cắt</div>' +
+      '<div><b>' + fmtTime(removed) + '</b>Đã loại bỏ (' + (removed / dur * 100).toFixed(1) + '%)</div>' +
+      '<div><b>' + state.keep.length + '</b>Số đoạn giữ lại</div>';
     draw();
   }
 
@@ -245,7 +247,7 @@
         } catch (e) {
           console.warn('FFmpeg thất bại, chuyển sang MediaRecorder:', e);
           log('FFmpeg lỗi: ' + e.message);
-          setStatus('⚠️ Không dùng được FFmpeg.wasm trên trình duyệt này — đang tự chuyển sang MediaRecorder (WebM)…');
+          setStatus('⚠️ Không dùng được FFmpeg.wasm — đang tự chuyển sang MediaRecorder (WebM)…');
           blob = await exportWithRecorder();
           ext = 'webm';
         }
@@ -254,7 +256,7 @@
       }
       const url = URL.createObjectURL(blob);
       const name = state.file.name.replace(/\.[^.]+$/, '') + '-no-silence.' + ext;
-      $('downloadArea').innerHTML = `<a class="dl" href="${url}" download="${name}">⬇︎ Tải ${name} (${fmtSize(blob.size)})</a>`;
+      $('downloadArea').innerHTML = '<a class="dl" href="' + url + '" download="' + name + '">⬇︎ Tải ' + name + ' (' + fmtSize(blob.size) + ')</a>';
       setStatus('✅ Xuất xong!');
     } catch (e) {
       console.error(e);
@@ -265,68 +267,68 @@
     }
   };
 
-  // --- 6a. FFmpeg.wasm: select/aselect + concat ---
+  // --- 6a. FFmpeg.wasm ---
   let ffmpeg = null;
-  async function getFFmpeg() {
-    if (ffmpeg) return ffmpeg;
-    if (!window.FFmpegWASM || !window.FFmpegUtil) throw new Error('Không tải được thư viện FFmpeg từ CDN.');
-    const { FFmpeg } = FFmpegWASM;
-    const { toBlobURL } = FFmpegUtil;
-    const coreBase = `https://unpkg.com/@ffmpeg/core@${CORE_VER}/dist/umd`;
-    const libBase = `https://unpkg.com/@ffmpeg/ffmpeg@${FFMPEG_VER}/dist/umd`;
 
-    ffmpeg = new FFmpeg();
-    ffmpeg.on('log', ({ message }) => log(message));
-    ffmpeg.on('progress', ({ progress }) => { $('prog').value = Math.min(1, Math.max(0, progress || 0)); });
-
-    setStatus('Đang tải FFmpeg.wasm (~32MB, chỉ lần đầu)…');
-
-    // QUAN TRọNG: @ffmpeg/ffmpeg tự tạo Worker từ file phụ trên CDN
-    // -> trình duyệt chặn vì khác origin. Phải nạp worker qua blob URL cùng origin.
-    const workerName = await findClassWorkerName(libBase);
-    const opts = {
-      coreURL: await toBlobURL(`${coreBase}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm'),
-    };
-    if (workerName) opts.classWorkerURL = await toBlobURL(`${libBase}/${workerName}`, 'text/javascript');
-
-    await ffmpeg.load(opts);
-    return ffmpeg;
-  }
-
-  // Tên file worker (ví dụ 814.ffmpeg.js) thay đổi theo phiên bản build,
-  // nên dò trực tiếp trong mã nguồn của ffmpeg.js.
+  // @ffmpeg/ffmpeg tự tạo Worker từ một file phụ trên CDN (ví dụ 814.ffmpeg.js).
+  // Trình duyệt chặn vì khác origin -> phải nạp worker qua blob URL cùng origin.
   let cachedWorkerName;
-  async function findClassWorkerName(libBase) {
+  async function findClassWorkerName() {
     if (cachedWorkerName !== undefined) return cachedWorkerName;
+    cachedWorkerName = '814.ffmpeg.js';
     try {
-      const src = await (await fetch(`${libBase}/ffmpeg.js`)).text();
-      const m = src.match(/["'`]([\w.-]*\d+\.ffmpeg\.js)["'`]/) || src.match(/([\w.-]+\.ffmpeg\.js)/);
-      cachedWorkerName = m ? m[1] : '814.ffmpeg.js';
-    } catch (_) {
-      cachedWorkerName = '814.ffmpeg.js';
+      const src = await (await fetch(LIB_BASE + '/ffmpeg.js')).text();
+      const m = src.match(/["'`]([A-Za-z0-9_.-]*[0-9]+\.ffmpeg\.js)["'`]/);
+      if (m) cachedWorkerName = m[1];
+    } catch (err) {
+      log('Không dò được tên worker, dùng mặc định.');
     }
     log('Worker script: ' + cachedWorkerName);
     return cachedWorkerName;
   }
 
+  async function getFFmpeg() {
+    if (ffmpeg) return ffmpeg;
+    if (!window.FFmpegWASM || !window.FFmpegUtil) throw new Error('Không tải được thư viện FFmpeg từ CDN.');
+    const FFmpeg = window.FFmpegWASM.FFmpeg;
+    const toBlobURL = window.FFmpegUtil.toBlobURL;
+
+    const inst = new FFmpeg();
+    inst.on('log', (e) => log(e.message));
+    inst.on('progress', (e) => { $('prog').value = Math.min(1, Math.max(0, e.progress || 0)); });
+
+    setStatus('Đang tải FFmpeg.wasm (~32MB, chỉ lần đầu)…');
+    const workerName = await findClassWorkerName();
+    const opts = {
+      coreURL: await toBlobURL(CORE_BASE + '/ffmpeg-core.js', 'text/javascript'),
+      wasmURL: await toBlobURL(CORE_BASE + '/ffmpeg-core.wasm', 'application/wasm'),
+      classWorkerURL: await toBlobURL(LIB_BASE + '/' + workerName, 'text/javascript'),
+    };
+
+    const ok = await inst.load(opts);
+    if (ok === false) throw new Error('FFmpeg.load() thất bại.');
+    ffmpeg = inst;
+    return ffmpeg;
+  }
+
   async function exportWithFFmpeg() {
     const ff = await getFFmpeg();
-    const { fetchFile } = FFmpegUtil;
-    const inName = 'input' + (state.file.name.match(/\.[^.]+$/) || ['.mp4'])[0];
+    const fetchFile = window.FFmpegUtil.fetchFile;
+    const ext = (state.file.name.match(/\.[^.]+$/) || ['.mp4'])[0];
+    const inName = 'input' + ext;
     setStatus('Đang nạp video vào bộ nhớ ảo…');
     await ff.writeFile(inName, await fetchFile(state.file));
 
     const expr = state.keep
-      .map(s => `between(t,${s.start.toFixed(3)},${s.end.toFixed(3)})`)
+      .map(s => 'between(t,' + s.start.toFixed(3) + ',' + s.end.toFixed(3) + ')')
       .join('+');
     const crf = $('crf').value, preset = $('preset').value;
 
-    setStatus(`Đang mã hoá ${state.keep.length} đoạn bằng FFmpeg…`);
+    setStatus('Đang mã hoá ' + state.keep.length + ' đoạn bằng FFmpeg…');
     await ff.exec([
       '-i', inName,
-      '-vf', `select='${expr}',setpts=N/FRAME_RATE/TB`,
-      '-af', `aselect='${expr}',asetpts=N/SR/TB`,
+      '-vf', "select='" + expr + "',setpts=N/FRAME_RATE/TB",
+      '-af', "aselect='" + expr + "',asetpts=N/SR/TB",
       '-c:v', 'libx264', '-preset', preset, '-crf', String(crf),
       '-c:a', 'aac', '-b:a', '160k',
       '-movflags', '+faststart',
