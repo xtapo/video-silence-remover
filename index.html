@@ -4,9 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Silence Remover — Xoá khoảng lặng video ngay trên trình duyệt</title>
-<link rel="stylesheet" href="styles.css?v=12" />
+<link rel="stylesheet" href="styles.css?v=13" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✂️</text></svg>" />
-<script src="coi-serviceworker.js?v=12"></script>
+<script src="coi-serviceworker.js?v=13"></script>
 </head>
 <body>
 <header>
@@ -30,7 +30,7 @@
     <div class="grid">
       <label>Ngưỡng âm lượng <span class="val" id="thVal">-40 dB</span>
         <input type="range" id="threshold" min="-70" max="-10" step="1" value="-40" />
-        <small>Âm thanh nhỏ hơn ngưỡng này được coi là im lặng.</small>
+        <small>Âm thanh nhỏ hơn ngưỡng này được coi là im lặng. <button class="link" id="autoTh" hidden>Dùng ngưỡng gợi ý</button></small>
       </label>
       <label>Độ dài im lặng tối thiểu <span class="val" id="minSilVal">0.50 s</span>
         <input type="range" id="minSilence" min="0.1" max="3" step="0.05" value="0.5" />
@@ -47,6 +47,7 @@
     </div>
     <button id="analyze" class="primary">Phân tích âm thanh</button>
     <div id="analyzeStatus" class="status"></div>
+    <div id="noiseInfo" class="status"></div>
     <small>Với tệp dài, bước này có thể mất vài chục giây. Nếu cách nhanh thất bại, phần mềm tự chuyển sang trích âm thanh bằng FFmpeg.</small>
   </section>
 
@@ -129,9 +130,9 @@
 
 <footer>
   <p>Không upload · Không theo dõi · Mã nguồn mở (MIT) · <a href="https://github.com/xtapo/video-silence-remover">GitHub</a></p>
-  <p>Phiên bản <b id="buildId">esm-12</b> — nếu bạn thấy số khác, hãy tải lại trang bằng Ctrl/Cmd + Shift + R.</p>
+  <p>Phiên bản <b id="buildId">esm-13</b> — nếu bạn thấy số khác, hãy tải lại trang bằng Ctrl/Cmd + Shift + R.</p>
 </footer>
 
-<script type="module" src="app.js?v=12"></script>
+<script type="module" src="app.js?v=13"></script>
 </body>
 </html>

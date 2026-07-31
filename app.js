@@ -8,8 +8,8 @@ const LIB_ESM = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm';
 const UTIL_ESM = 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
 const CORE_ST = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
 const CORE_MT = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
-const WEBCODECS = './webcodecs.js?v=12';
-const KEYFRAMES = './mp4keyframes.js?v=12';
+const WEBCODECS = './webcodecs.js?v=13';
+const KEYFRAMES = './mp4keyframes.js?v=13';
 
 const ANALYSIS_SR = 16000;
 
@@ -58,6 +58,7 @@ function loadFile(f) {
   $('resultCard').hidden = true;
   $('exportCard').hidden = true;
   $('analyzeStatus').textContent = '';
+  $('noiseInfo').textContent = '';
   video.onloadedmetadata = () => {
     state.duration = video.duration;
     state.w = video.videoWidth; state.h = video.videoHeight;
@@ -107,7 +108,7 @@ function applySourceDefaults() {
 const bind = (id, out, fmt) => {
   const el = $(id);
   const upd = () => $(out).textContent = fmt(parseFloat(el.value));
-  el.addEventListener('input', () => { upd(); if (state.envelope) { computeSegments(); render(); } });
+  el.addEventListener('input', () => { upd(); if (state.envelope) { computeSegments(); render(); previewCopyPlan(); } });
   upd();
 };
 bind('threshold', 'thVal', v => v + ' dB');
@@ -144,6 +145,7 @@ async function analyze() {
     }
 
     state.envelope = env;
+    showNoiseProfile(env);
     computeSegments();
     render();
     $('resultCard').hidden = false;
@@ -161,6 +163,43 @@ async function analyze() {
     $('analyze').disabled = false;
   }
 }
+
+/* Đo nền ồn và mức giọng nói để gợi ý ngưỡng hợp lý. */
+let suggested = null;
+
+function percentiles(env) {
+  const a = Float32Array.from(env).sort();
+  const at = (p) => a[Math.min(a.length - 1, Math.max(0, Math.floor(p * (a.length - 1))))];
+  return { p05: at(0.05), p20: at(0.20), p50: at(0.50), p80: at(0.80), p95: at(0.95) };
+}
+
+function showNoiseProfile(env) {
+  const el = $('noiseInfo');
+  const q = percentiles(env);
+  const floor = q.p20, speech = q.p95;
+  let th = Math.round(floor + (speech - floor) * 0.35);
+  th = Math.max(-70, Math.min(-10, th));
+  suggested = th;
+
+  const cur = parseFloat($('threshold').value);
+  el.className = 'status';
+  el.innerHTML = '🎚️ Nền ồn ≈ <b>' + floor.toFixed(0) + ' dB</b> · giọng nói ≈ <b>' + speech.toFixed(0) +
+    ' dB</b> — ngưỡng nên dùng khoảng <b>' + th + ' dB</b> (đang đặt ' + cur + ' dB).';
+  $('autoTh').hidden = false;
+
+  if (floor > cur) {
+    el.className = 'status err';
+    el.innerHTML += ' <br>⚠️ Nền ồn của bạn <b>cao hơn</b> ngưỡng hiện tại, nên gần như mọi thứ đều bị coi là “có tiếng” và không cắt được bao nhiêu.';
+  }
+  log('Nền ồn p20=' + floor.toFixed(1) + ' dB · trung vị=' + q.p50.toFixed(1) + ' dB · p95=' + speech.toFixed(1) + ' dB · gợi ý ' + th + ' dB');
+}
+
+$('autoTh').onclick = () => {
+  if (suggested == null) return;
+  const el = $('threshold');
+  el.value = String(suggested);
+  el.dispatchEvent(new Event('input'));
+};
 
 async function decodeFast() {
   const buf = await state.file.arrayBuffer();
@@ -362,12 +401,11 @@ const srcExt = () => ((state.file.name.match(/\.[^.]+$/) || ['.mp4'])[0]).toLowe
 let copyPlan = null;
 
 async function previewCopyPlan() {
-  copyPlan = null;
   const el = $('copyInfo');
   if (!el || !state.keep.length) return;
   try {
     const { readKeyframes, snapToKeyframes } = await import(KEYFRAMES);
-    const kf = await readKeyframes(state.file);
+    const kf = (copyPlan && copyPlan.kf) || await readKeyframes(state.file);
     if (!kf || kf.length < 2) {
       el.className = 'status err';
       el.textContent = 'ℹ️ Không đọc được bảng keyframe của tệp này, chế độ Siêu tốc có thể không chính xác.';
@@ -375,15 +413,15 @@ async function previewCopyPlan() {
     }
     const snapped = snapToKeyframes(state.keep, kf);
     const total = snapped.reduce((a, s) => a + (s.end - s.start), 0);
+    const exact = state.keep.reduce((a, s) => a + (s.end - s.start), 0);
     const gap = (kf[kf.length - 1] - kf[0]) / Math.max(1, kf.length - 1);
     copyPlan = { kf, snapped, total };
     el.className = 'status';
     el.textContent = '🔑 ' + kf.length + ' keyframe · cách nhau trung bình ' + gap.toFixed(1) + 's — ' +
-      'chế độ Siêu tốc sẽ cho ra ' + fmtTime(total) + ' (' + snapped.length + ' đoạn), ' +
-      'so với ' + fmtTime(state.keep.reduce((a, s) => a + (s.end - s.start), 0)) + ' nếu mã hoá lại.';
+      'Siêu tốc cho ra ' + fmtTime(total) + ' (' + snapped.length + ' đoạn), còn mã hoá lại cho ra ' + fmtTime(exact) + '.';
     if (total > state.duration * 0.95) {
       el.className = 'status err';
-      el.textContent += ' Keyframe quá thưa nên hầu như không cắt được gì — hãy dùng Turbo hoặc FFmpeg.wasm.';
+      el.textContent += ' Keyframe quá thưa so với các khoảng lặng — Siêu tốc gần như không cắt được gì.';
     }
   } catch (e) {
     log('Không đọc được keyframe: ' + errText(e));
@@ -519,7 +557,6 @@ async function getFFmpeg() {
 
 /* --- 6b-1. SIÊU TỐC: cắt ghép không mã hoá lại --- */
 async function exportWithCopy() {
-  // 1) Lấy danh sách keyframe thực tế để không bị chồng đoạn.
   let segs = state.keep;
   try {
     const { readKeyframes, snapToKeyframes } = await import(KEYFRAMES);
@@ -535,7 +572,6 @@ async function exportWithCopy() {
     log('Không đọc được keyframe: ' + errText(e));
   }
 
-  // 2) Kiểm tra an toàn: tổng đầu ra không được vượt thời lượng gốc.
   const clean = [];
   for (const s of segs) {
     const a = Math.max(0, s.start), b = Math.min(state.duration || s.end, s.end);
