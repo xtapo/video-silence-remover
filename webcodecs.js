@@ -1,7 +1,5 @@
 /* Bộ máy xuất "Turbo" dùng WebCodecs.
- * Khác với FFmpeg.wasm (giải mã + mã hoá hoàn toàn bằng phần mềm trong máy ảo wasm),
- * ở đây trình duyệt giải mã và mã hoá bằng phần cứng (GPU / bộ mã hoá chuyên dụng),
- * nên nhanh hơn hàng chục lần với video 4K.
+ * Trình duyệt giải mã và mã hoá bằng phần cứng nên nhanh hơn FFmpeg.wasm rất nhiều.
  * Vẫn 100% chạy cục bộ, không upload gì.
  */
 
@@ -17,13 +15,24 @@ export function supported() {
 const once = (el, ev) => new Promise(r => el.addEventListener(ev, r, { once: true }));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Đọc frame nhưng không chờ vô hạn (khi video kết thúc sẽ không còn frame nào).
+// Chờ metadata một cách chắc chắn: có thể sự kiện đã bắn trước, hoặc videoWidth đến muộn hơn.
+async function waitMeta(v) {
+  if (v.readyState >= 1 && v.videoWidth) return;
+  await new Promise((res) => {
+    const done = () => res();
+    v.addEventListener('loadedmetadata', done, { once: true });
+    v.addEventListener('loadeddata', done, { once: true });
+    v.addEventListener('error', done, { once: true });
+    setTimeout(done, 15000);
+  });
+  for (let i = 0; i < 60 && !v.videoWidth; i++) await sleep(50);
+}
+
 async function readFrame(reader, ms) {
   let timer;
   const timeout = new Promise(r => { timer = setTimeout(() => r({ timedOut: true }), ms); });
   try {
-    const res = await Promise.race([reader.read(), timeout]);
-    return res;
+    return await Promise.race([reader.read(), timeout]);
   } finally {
     clearTimeout(timer);
   }
@@ -45,9 +54,14 @@ export async function exportTurbo(o) {
   document.body.appendChild(v);
 
   try {
-    await once(v, 'loadedmetadata');
+    await waitMeta(v);
     const sw = v.videoWidth, sh = v.videoHeight;
-    if (!sw || !sh) throw new Error('Không đọc được kích thước video.');
+    if (!sw || !sh) {
+      throw new Error('Trình duyệt không giải mã được phần HÌNH của tệp này (videoWidth = 0). ' +
+        'Thường gặp với video H.265/HEVC trên Edge/Chrome khi máy chưa có bộ giải mã HEVC. ' +
+        'Hãy chuyển sang chế độ FFmpeg.wasm (giải mã bằng phần mềm, chậm nhưng chạy được), ' +
+        'hoặc chuyển video sang H.264 rồi thử lại.');
+    }
 
     let ow = sw, oh = sh;
     if (o.outHeight && o.outHeight < sh) {
@@ -66,8 +80,7 @@ export async function exportTurbo(o) {
       for (const c of codecs) {
         const test = {
           codec: c, width: ow, height: oh, bitrate, framerate: fpsGuess,
-          hardwareAcceleration: hw, avc: { format: 'avc' },
-          latencyMode: 'quality',
+          hardwareAcceleration: hw, avc: { format: 'avc' }, latencyMode: 'quality',
         };
         try {
           const s = await VideoEncoder.isConfigSupported(test);
@@ -129,7 +142,7 @@ export async function exportTurbo(o) {
       while (true) {
         if (cancelled()) throw new Error('Đã dừng theo yêu cầu.');
         const res = await readFrame(reader, 4000);
-        if (res.timedOut) { log('Hết frame ở đoạn ' + (i + 1) + ' (video kết thúc).'); break; }
+        if (res.timedOut) { log('Hết frame ở đoạn ' + (i + 1) + '.'); break; }
         if (res.done) break;
         const frame = res.value;
         if (!frame) continue;
@@ -157,7 +170,6 @@ export async function exportTurbo(o) {
         frames++;
         if (encError) throw encError;
 
-        // Chống nghẽn: nếu bộ mã hoá không theo kịp thì tạm dừng phát.
         if (venc.encodeQueueSize > 24) {
           v.pause();
           while (venc.encodeQueueSize > 6 && !cancelled()) await sleep(15);
@@ -174,6 +186,8 @@ export async function exportTurbo(o) {
     v.pause();
     try { track.stop(); } catch (_) {}
     try { await reader.cancel(); } catch (_) {}
+
+    if (!frames) throw new Error('Không nhận được khung hình nào từ trình duyệt — nhiều khả năng định dạng hình không được hỗ trợ. Hãy dùng FFmpeg.wasm.');
 
     log('Đã mã hoá ' + frames + ' khung hình, đang kết thúc…');
     await venc.flush();
@@ -222,12 +236,8 @@ async function encodeAudio(muxer, buf, keep) {
       const data = new Float32Array(n * ch);
       for (let c = 0; c < ch; c++) data.set(src[c].subarray(p, p + n), c * n);
       const ad = new AudioData({
-        format: 'f32-planar',
-        sampleRate: sr,
-        numberOfFrames: n,
-        numberOfChannels: ch,
-        timestamp: Math.round(outIdx / sr * 1e6),
-        data,
+        format: 'f32-planar', sampleRate: sr, numberOfFrames: n,
+        numberOfChannels: ch, timestamp: Math.round(outIdx / sr * 1e6), data,
       });
       aenc.encode(ad);
       ad.close();
