@@ -8,9 +8,9 @@ const LIB_ESM = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm';
 const UTIL_ESM = 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
 const CORE_ST = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
 const CORE_MT = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
-const WEBCODECS = './webcodecs.js?v=11';
+const WEBCODECS = './webcodecs.js?v=12';
+const KEYFRAMES = './mp4keyframes.js?v=12';
 
-// Phân tích im lặng chỉ cần âm thanh mono 16 kHz.
 const ANALYSIS_SR = 16000;
 
 const state = {
@@ -149,6 +149,7 @@ async function analyze() {
     $('resultCard').hidden = false;
     $('exportCard').hidden = false;
     applySourceDefaults();
+    await previewCopyPlan();
     st.textContent = '✅ Phân tích xong sau ' + ((performance.now() - t0) / 1000).toFixed(1) + ' giây.';
     $('resultCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (e) {
@@ -357,6 +358,38 @@ const srcExt = () => ((state.file.name.match(/\.[^.]+$/) || ['.mp4'])[0]).toLowe
   applySourceDefaults();
 })();
 
+// Đọc keyframe và cho biết trước chế độ Siêu tốc sẽ cho kết quả dài bao nhiêu.
+let copyPlan = null;
+
+async function previewCopyPlan() {
+  copyPlan = null;
+  const el = $('copyInfo');
+  if (!el || !state.keep.length) return;
+  try {
+    const { readKeyframes, snapToKeyframes } = await import(KEYFRAMES);
+    const kf = await readKeyframes(state.file);
+    if (!kf || kf.length < 2) {
+      el.className = 'status err';
+      el.textContent = 'ℹ️ Không đọc được bảng keyframe của tệp này, chế độ Siêu tốc có thể không chính xác.';
+      return;
+    }
+    const snapped = snapToKeyframes(state.keep, kf);
+    const total = snapped.reduce((a, s) => a + (s.end - s.start), 0);
+    const gap = (kf[kf.length - 1] - kf[0]) / Math.max(1, kf.length - 1);
+    copyPlan = { kf, snapped, total };
+    el.className = 'status';
+    el.textContent = '🔑 ' + kf.length + ' keyframe · cách nhau trung bình ' + gap.toFixed(1) + 's — ' +
+      'chế độ Siêu tốc sẽ cho ra ' + fmtTime(total) + ' (' + snapped.length + ' đoạn), ' +
+      'so với ' + fmtTime(state.keep.reduce((a, s) => a + (s.end - s.start), 0)) + ' nếu mã hoá lại.';
+    if (total > state.duration * 0.95) {
+      el.className = 'status err';
+      el.textContent += ' Keyframe quá thưa nên hầu như không cắt được gì — hãy dùng Turbo hoặc FFmpeg.wasm.';
+    }
+  } catch (e) {
+    log('Không đọc được keyframe: ' + errText(e));
+  }
+}
+
 $('cancel').onclick = () => { state.cancel = true; setStatus('Đang dừng…'); };
 
 $('export').onclick = async () => {
@@ -484,8 +517,36 @@ async function getFFmpeg() {
   return ffmpeg;
 }
 
-/* --- 6b-1. SIÊU TỐC: cắt ghép không mã hoá lại (-c copy) --- */
+/* --- 6b-1. SIÊU TỐC: cắt ghép không mã hoá lại --- */
 async function exportWithCopy() {
+  // 1) Lấy danh sách keyframe thực tế để không bị chồng đoạn.
+  let segs = state.keep;
+  try {
+    const { readKeyframes, snapToKeyframes } = await import(KEYFRAMES);
+    const kf = (copyPlan && copyPlan.kf) || await readKeyframes(state.file);
+    if (kf && kf.length > 1) {
+      segs = snapToKeyframes(state.keep, kf);
+      log('Keyframe: ' + kf.length + ' — đã lùi điểm cắt về keyframe và gộp ' +
+        state.keep.length + ' đoạn thành ' + segs.length + ' đoạn không chồng nhau.');
+    } else {
+      log('⚠️ Không đọc được bảng keyframe — kết quả có thể còn lặp đoạn.');
+    }
+  } catch (e) {
+    log('Không đọc được keyframe: ' + errText(e));
+  }
+
+  // 2) Kiểm tra an toàn: tổng đầu ra không được vượt thời lượng gốc.
+  const clean = [];
+  for (const s of segs) {
+    const a = Math.max(0, s.start), b = Math.min(state.duration || s.end, s.end);
+    if (b - a < 0.05) continue;
+    const last = clean[clean.length - 1];
+    if (last && a <= last.end + 0.001) last.end = Math.max(last.end, b);
+    else clean.push({ start: a, end: b });
+  }
+  const expect = clean.reduce((a, s) => a + (s.end - s.start), 0);
+  log('Dự kiến đầu ra: ' + fmtTime(expect) + ' / gốc ' + fmtTime(state.duration) + ' · ' + clean.length + ' đoạn');
+
   const ff = await getFFmpeg();
   const inExt = srcExt();
   const container = ['.mp4', '.mov', '.m4v', '.mkv', '.webm'].includes(inExt) ? inExt : '.mp4';
@@ -497,17 +558,16 @@ async function exportWithCopy() {
   setStatus('Đang đọc thông tin video…');
   try { await ff.exec(['-hide_banner', '-i', inName]); } catch (_) {}
   const isHevc = /hevc|h265/.test(probe.vcodec || '');
-  if (probe.vcodec) log('Codec nguồn: ' + probe.vcodec + ' / ' + (probe.acodec || 'không có tiếng') + ' — giữ nguyên, không mã hoá lại.');
 
   const pieces = [];
-  const n = state.keep.length;
+  const n = clean.length;
   for (let i = 0; i < n; i++) {
     if (state.cancel) throw new Error('Đã dừng theo yêu cầu.');
-    const s = state.keep[i];
+    const s = clean[i];
     const name = 'p' + String(i).padStart(3, '0') + container;
     const a = [
       '-hide_banner', '-nostdin',
-      '-ss', s.start.toFixed(3),     // tua trước -i: nhảy thẳng tới keyframe, không giải mã
+      '-ss', s.start.toFixed(3),
       '-i', inName,
       '-t', (s.end - s.start).toFixed(3),
       '-map', '0:v:0', '-map', '0:a:0?',
@@ -521,7 +581,6 @@ async function exportWithCopy() {
     setStatus('Sao chép đoạn ' + (i + 1) + '/' + n + ' (không mã hoá lại)…');
   }
 
-  // Giải phóng bản gốc trước khi ghép để đỡ tốn bộ nhớ.
   try { await ff.deleteFile(inName); } catch (_) {}
 
   setStatus('Đang ghép ' + n + ' đoạn…');
@@ -529,14 +588,14 @@ async function exportWithCopy() {
   await ff.writeFile('list.txt', new TextEncoder().encode(list));
   const outName = 'output' + container;
   const cat = ['-hide_banner', '-nostdin', '-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy'];
-  if (container === '.mp4' || container === '.mov' || container === '.m4v') cat.push('-movflags', '+faststart');
+  if (['.mp4', '.mov', '.m4v'].includes(container)) cat.push('-movflags', '+faststart');
   cat.push(outName);
   await ff.exec(cat);
 
   const data = await ff.readFile(outName);
   for (const p of pieces) { try { await ff.deleteFile(p); } catch (_) {} }
   try { await ff.deleteFile('list.txt'); await ff.deleteFile(outName); } catch (_) {}
-  if (!data || !data.length) throw new Error('Không tạo được tệp đầu ra (có thể hết bộ nhớ — hãy thử tệp ngắn hơn).');
+  if (!data || !data.length) throw new Error('Không tạo được tệp đầu ra (có thể hết bộ nhớ).');
   $('prog').value = 1;
   return {
     blob: new Blob([data.buffer], { type: container === '.webm' ? 'video/webm' : 'video/mp4' }),
