@@ -4,9 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Silence Remover — Xoá khoảng lặng video ngay trên trình duyệt</title>
-<link rel="stylesheet" href="styles.css?v=10" />
+<link rel="stylesheet" href="styles.css?v=11" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✂️</text></svg>" />
-<script src="coi-serviceworker.js?v=10"></script>
+<script src="coi-serviceworker.js?v=11"></script>
 </head>
 <body>
 <header>
@@ -67,10 +67,12 @@
     <h2>4. Xuất video đã cắt</h2>
     <div id="srcInfo" class="status"></div>
     <div class="row">
-      <label class="chk"><input type="radio" name="engine" value="turbo" checked /> <b>Turbo (WebCodecs)</b> — MP4, tăng tốc phần cứng</label>
+      <label class="chk"><input type="radio" name="engine" value="copy" checked /> <b>Siêu tốc</b> — không mã hoá lại, giữ nguyên chất lượng</label>
+      <label class="chk"><input type="radio" name="engine" value="turbo" /> Turbo (WebCodecs) — MP4, tăng tốc phần cứng</label>
       <label class="chk"><input type="radio" name="engine" value="recorder" /> MediaRecorder — WebM, ghi thời gian thực</label>
-      <label class="chk"><input type="radio" name="engine" value="ffmpeg" /> FFmpeg.wasm — MP4, giải mã bằng phần mềm (chạy được cả HEVC)</label>
+      <label class="chk"><input type="radio" name="engine" value="ffmpeg" /> FFmpeg.wasm — MP4, cắt chính xác từng khung hình (chậm)</label>
     </div>
+    <small>Chế độ <b>Siêu tốc</b> chỉ cắt ghép dữ liệu có sẵn nên nhanh gấp hàng chục lần và không giảm chất lượng, nhưng điểm cắt phải rơi vào keyframe của video gốc — tức là mỗi chỗ nối có thể còn sót lại một đoạn lặng ngắn (thường 1–10 giây tùy video). Nếu cần cắt sát từng khung hình, hãy dùng Turbo hoặc FFmpeg.wasm.</small>
     <div id="isoStatus" class="status"></div>
     <div class="grid">
       <label>Tốc độ đọc (Turbo)
@@ -89,7 +91,7 @@
           <option value="720">720p</option>
           <option value="480">480p</option>
         </select>
-        <small>Video 4K sẽ tự đề xuất 1080p. Chỉ thu nhỏ, không phóng to.</small>
+        <small>Không áp dụng cho chế độ Siêu tốc (giữ nguyên bản gốc).</small>
       </label>
       <label>Chất lượng <span class="val" id="crfVal">23</span>
         <input type="range" id="crf" min="18" max="32" step="1" value="23" />
@@ -126,9 +128,9 @@
 
 <footer>
   <p>Không upload · Không theo dõi · Mã nguồn mở (MIT) · <a href="https://github.com/xtapo/video-silence-remover">GitHub</a></p>
-  <p>Phiên bản <b id="buildId">esm-10</b> — nếu bạn thấy số khác, hãy tải lại trang bằng Ctrl/Cmd + Shift + R.</p>
+  <p>Phiên bản <b id="buildId">esm-11</b> — nếu bạn thấy số khác, hãy tải lại trang bằng Ctrl/Cmd + Shift + R.</p>
 </footer>
 
-<script type="module" src="app.js?v=10"></script>
+<script type="module" src="app.js?v=11"></script>
 </body>
 </html>
