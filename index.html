@@ -4,9 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Silence Remover — Xoá khoảng lặng video ngay trên trình duyệt</title>
-<link rel="stylesheet" href="styles.css?v=9" />
+<link rel="stylesheet" href="styles.css?v=10" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✂️</text></svg>" />
-<script src="coi-serviceworker.js?v=9"></script>
+<script src="coi-serviceworker.js?v=10"></script>
 </head>
 <body>
 <header>
@@ -47,6 +47,7 @@
     </div>
     <button id="analyze" class="primary">Phân tích âm thanh</button>
     <div id="analyzeStatus" class="status"></div>
+    <small>Với tệp dài, bước này có thể mất vài chục giây. Nếu cách nhanh thất bại, phần mềm tự chuyển sang trích âm thanh bằng FFmpeg.</small>
   </section>
 
   <section class="card" id="resultCard" hidden>
@@ -125,9 +126,9 @@
 
 <footer>
   <p>Không upload · Không theo dõi · Mã nguồn mở (MIT) · <a href="https://github.com/xtapo/video-silence-remover">GitHub</a></p>
-  <p>Phiên bản <b id="buildId">esm-9</b> — nếu bạn thấy số khác, hãy tải lại trang bằng Ctrl/Cmd + Shift + R.</p>
+  <p>Phiên bản <b id="buildId">esm-10</b> — nếu bạn thấy số khác, hãy tải lại trang bằng Ctrl/Cmd + Shift + R.</p>
 </footer>
 
-<script type="module" src="app.js?v=9"></script>
+<script type="module" src="app.js?v=10"></script>
 </body>
 </html>

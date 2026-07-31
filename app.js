@@ -8,15 +8,18 @@ const LIB_ESM = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm';
 const UTIL_ESM = 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
 const CORE_ST = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
 const CORE_MT = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
-const WEBCODECS = './webcodecs.js?v=9';
+const WEBCODECS = './webcodecs.js?v=10';
+
+// Phân tích im lặng chỉ cần âm thanh mono 16 kHz — nhẹ hơn ~17 lần so với 44.1 kHz stereo.
+const ANALYSIS_SR = 16000;
 
 const state = {
   file: null,
   duration: 0,
   w: 0, h: 0,
-  videoDecodable: true,   // trình duyệt có giải mã được phần hình không
+  videoDecodable: true,
   envelope: null,
-  audio: null,
+  audio: null,          // AudioBuffer chất lượng đầy đủ, chỉ dùng khi xuất Turbo
   frameDur: 0.02,
   keep: [],
   cancel: false,
@@ -37,6 +40,10 @@ const fmtTime = s => {
   const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = (s % 60);
   return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + sec.toFixed(1).padStart(4, '0');
 };
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const withTimeout = (p, ms, label) => Promise.race([
+  p, new Promise((_, rej) => setTimeout(() => rej(new Error(label || ('quá ' + Math.round(ms / 1000) + ' giây'))), ms)),
+]);
 
 const video = $('video');
 
@@ -62,7 +69,6 @@ function loadFile(f) {
 
 let turboOk = false;
 
-// Chọn bộ máy xuất phù hợp và giải thích cho người dùng.
 function applySourceDefaults() {
   const info = $('srcInfo');
   const rTurbo = document.querySelector('input[name=engine][value=turbo]');
@@ -70,7 +76,6 @@ function applySourceDefaults() {
   const rFf = document.querySelector('input[name=engine][value=ffmpeg]');
   if (!info) return;
 
-  // Trường hợp nặng nhất: trình duyệt không giải mã được hình (hay gặp với HEVC).
   if (state.file && state.duration && !state.videoDecodable) {
     if (rTurbo) rTurbo.disabled = true;
     if (rRec) rRec.disabled = true;
@@ -118,53 +123,102 @@ $('crf').addEventListener('input', e => $('crfVal').textContent = e.target.value
 /* ---------------- 3. Phân tích âm thanh ---------------- */
 $('analyze').onclick = analyze;
 
+const logEl = $('log');
+const log = (m) => { logEl.hidden = false; logEl.textContent += m + '\n'; logEl.scrollTop = logEl.scrollHeight; };
+
 async function analyze() {
   const st = $('analyzeStatus');
-  st.className = 'status'; st.textContent = 'Đang đọc tệp…';
+  st.className = 'status';
   $('analyze').disabled = true;
+  const t0 = performance.now();
+  const tick = setInterval(() => {
+    const el = (performance.now() - t0) / 1000;
+    if (el > 3) st.textContent = st.textContent.replace(/ \u00b7 \d+s$/, '') + ' · ' + Math.round(el) + 's';
+  }, 1000);
+
   try {
-    const buf = await state.file.arrayBuffer();
-    st.textContent = 'Đang giải mã âm thanh…';
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const audio = await ctx.decodeAudioData(buf.slice(0));
-    ctx.close();
+    let env = null;
+    st.textContent = 'Đang giải mã âm thanh (cách nhanh)…';
+    try {
+      env = await withTimeout(decodeFast(), 150000, 'giải mã quá 150 giây');
+    } catch (e) {
+      log('Cách nhanh thất bại: ' + errText(e) + ' — chuyển sang trích âm thanh bằng FFmpeg…');
+      st.textContent = 'Đang trích âm thanh bằng FFmpeg (bỏ qua phần hình, nhẹ hơn nhiều)…';
+      env = await decodeViaFfmpeg(st);
+    }
 
-    state.audio = audio;
-    state.duration = Math.max(state.duration || 0, audio.duration);
-    st.textContent = 'Đang tính đường bao âm lượng…';
-    state.envelope = buildEnvelope(audio, state.frameDur);
-
+    state.envelope = env;
     computeSegments();
     render();
     $('resultCard').hidden = false;
     $('exportCard').hidden = false;
     applySourceDefaults();
-    st.textContent = '✅ Phân tích xong. Chỉnh thanh trượt để cập nhật tức thì.';
+    st.textContent = '✅ Phân tích xong sau ' + ((performance.now() - t0) / 1000).toFixed(1) +
+      ' giây. Chỉnh thanh trượt để cập nhật tức thì.';
     $('resultCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (e) {
     console.error(e);
     st.className = 'status err';
-    st.textContent = '❌ Không giải mã được âm thanh (' + errText(e) + ').';
+    st.textContent = '❌ Không phân tích được âm thanh (' + errText(e) + ').';
   } finally {
+    clearInterval(tick);
     $('analyze').disabled = false;
   }
 }
 
-function buildEnvelope(audio, frameDur) {
-  const sr = audio.sampleRate;
+// Cách 1: decodeAudioData nhưng xuất thẳng ra 16 kHz mono để không ngỗn bộ nhớ.
+async function decodeFast() {
+  const buf = await state.file.arrayBuffer();      // KHÔNG slice() — tránh nhân đôi bộ nhớ
+  const ctx = new OfflineAudioContext(1, 1, ANALYSIS_SR);
+  const audio = await ctx.decodeAudioData(buf);    // tự hạ tần số về 16 kHz
+  state.duration = Math.max(state.duration || 0, audio.duration);
+  log('Giải mã nhanh OK · ' + audio.sampleRate + ' Hz · ' + fmtTime(audio.duration));
+  return envelopeFromBuffer(audio);
+}
+
+// Cách 2 (dự phòng): FFmpeg trích PCM thô, có -vn nên không đụng tới hình — rất nhẹ.
+async function decodeViaFfmpeg(st) {
+  const ff = await getFFmpeg();
+  const inExt = (state.file.name.match(/\.[^.]+$/) || ['.mp4'])[0];
+  const inName = 'input' + inExt;
+  st.textContent = 'Đang nạp tệp vào FFmpeg…';
+  await ff.writeFile(inName, await ffUtil.fetchFile(state.file));
+  st.textContent = 'Đang trích âm thanh (bỏ qua hình)…';
+  await ff.exec([
+    '-hide_banner', '-nostdin', '-i', inName,
+    '-vn', '-sn', '-dn', '-map', '0:a:0',
+    '-ac', '1', '-ar', String(ANALYSIS_SR),
+    '-f', 's16le', '-acodec', 'pcm_s16le', 'audio.raw',
+  ]);
+  const data = await ff.readFile('audio.raw');
+  try { await ff.deleteFile('audio.raw'); } catch (_) {}
+  if (!data || !data.length) throw new Error('không trích được luồng âm thanh nào');
+  const pcm = new Int16Array(data.buffer, data.byteOffset, Math.floor(data.byteLength / 2));
+  state.duration = Math.max(state.duration || 0, pcm.length / ANALYSIS_SR);
+  log('Trích âm thanh OK · ' + pcm.length + ' mẫu · ' + fmtTime(pcm.length / ANALYSIS_SR));
+  return envelopeFromMono(pcm, ANALYSIS_SR, state.frameDur, 1 / 32768);
+}
+
+function envelopeFromBuffer(audio) {
+  const n = audio.length;
+  const ch = audio.numberOfChannels;
+  const a = audio.getChannelData(0);
+  if (ch === 1) return envelopeFromMono(a, audio.sampleRate, state.frameDur, 1);
+  const b = audio.getChannelData(1);
+  const mono = new Float32Array(n);
+  for (let i = 0; i < n; i++) mono[i] = (a[i] + b[i]) * 0.5;
+  return envelopeFromMono(mono, audio.sampleRate, state.frameDur, 1);
+}
+
+function envelopeFromMono(data, sr, frameDur, scale) {
   const frameLen = Math.max(1, Math.round(sr * frameDur));
-  const n = Math.ceil(audio.length / frameLen);
+  const n = Math.ceil(data.length / frameLen);
   const out = new Float32Array(n);
-  const chans = [];
-  for (let c = 0; c < audio.numberOfChannels; c++) chans.push(audio.getChannelData(c));
   for (let i = 0; i < n; i++) {
-    const s0 = i * frameLen, s1 = Math.min(audio.length, s0 + frameLen);
-    let sum = 0, cnt = 0;
-    for (const ch of chans) {
-      for (let s = s0; s < s1; s++) { const v = ch[s]; sum += v * v; cnt++; }
-    }
-    const rms = cnt ? Math.sqrt(sum / cnt) : 0;
-    out[i] = 20 * Math.log10(rms + 1e-10);
+    const s0 = i * frameLen, s1 = Math.min(data.length, s0 + frameLen);
+    let sum = 0;
+    for (let s = s0; s < s1; s++) { const v = data[s] * scale; sum += v * v; }
+    out[i] = 20 * Math.log10(Math.sqrt(sum / Math.max(1, s1 - s0)) + 1e-10);
   }
   return out;
 }
@@ -281,8 +335,6 @@ $('playPreview').onclick = () => {
 $('stopPreview').onclick = () => video.pause();
 
 /* ---------------- 6. Xuất video ---------------- */
-const logEl = $('log');
-const log = (m) => { logEl.hidden = false; logEl.textContent += m + '\n'; logEl.scrollTop = logEl.scrollHeight; };
 const setStatus = (m, err) => { const s = $('exportStatus'); s.className = 'status' + (err ? ' err' : ''); s.textContent = m; };
 
 function errText(e) {
@@ -328,17 +380,13 @@ $('export').onclick = async () => {
   $('cancel').hidden = false;
   $('downloadArea').innerHTML = '';
   $('prog').hidden = false; $('prog').value = 0;
-  let ext = engine === 'recorder' ? 'webm' : 'mp4';
+  const ext = engine === 'recorder' ? 'webm' : 'mp4';
   const t0 = performance.now();
   try {
     let blob;
-    if (engine === 'turbo') {
-      blob = await exportTurboRun(t0);
-    } else if (engine === 'ffmpeg') {
-      blob = await exportWithFFmpeg();
-    } else {
-      blob = await exportWithRecorder();
-    }
+    if (engine === 'turbo') blob = await exportTurboRun(t0);
+    else if (engine === 'ffmpeg') blob = await exportWithFFmpeg();
+    else blob = await exportWithRecorder();
     const url = URL.createObjectURL(blob);
     const name = state.file.name.replace(/\.[^.]+$/, '') + '-no-silence.' + ext;
     $('downloadArea').innerHTML = '<a class="dl" href="' + url + '" download="' + name + '">⬇︎ Tải ' + name + ' (' + fmtSize(blob.size) + ')</a>';
@@ -357,6 +405,19 @@ $('export').onclick = async () => {
 async function exportTurboRun(t0) {
   const mod = await import(WEBCODECS);
   if (!mod.supported()) throw new Error('Trình duyệt không hỗ trợ WebCodecs.');
+
+  // Phân tích dùng 16 kHz cho nhẹ; khi xuất mới cần âm thanh chất lượng đầy đủ.
+  if (!state.audio) {
+    setStatus('Đang chuẩn bị âm thanh chất lượng cao…');
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      state.audio = await ctx.decodeAudioData(await state.file.arrayBuffer());
+      ctx.close();
+    } catch (e) {
+      log('Không giải mã được âm thanh chất lượng cao (' + errText(e) + ') — xuất video không tiếng.');
+    }
+  }
+
   const outH = parseInt($('scale').value, 10) || 0;
   const crf = parseFloat($('crf').value);
   const quality = Math.max(0.3, Math.min(1.3, (34 - crf) / 12));
@@ -437,7 +498,7 @@ async function exportWithFFmpeg() {
   const inName = 'input' + inExt;
 
   setStatus('Đang nạp video vào bộ nhớ ảo…');
-  await ff.writeFile(inName, await ffUtil.fetchFile(state.file));
+  try { await ff.writeFile(inName, await ffUtil.fetchFile(state.file)); } catch (e) { throw new Error('Không nạp được tệp vào FFmpeg: ' + errText(e)); }
 
   setStatus('Đang đọc thông tin video…');
   try { await ff.exec(['-hide_banner', '-i', inName]); } catch (_) {}
@@ -452,7 +513,6 @@ async function exportWithFFmpeg() {
   if (fpsSel > 0 && (!srcFps || fpsSel < srcFps)) vf.push('fps=' + fpsSel);
   if (scaleSel > 0 && (!srcH || scaleSel < srcH)) vf.push('scale=-2:' + scaleSel + ':flags=fast_bilinear');
 
-  // Một lần chạy duy nhất với bộ lọc select: tránh chi phí tua lại + khởi động x264 cho từng đoạn.
   const expr = state.keep.map(s => 'between(t,' + s.start.toFixed(3) + ',' + s.end.toFixed(3) + ')').join('+');
   const vfAll = ["select='" + expr + "'", 'setpts=N/FRAME_RATE/TB'].concat(vf);
 
@@ -473,8 +533,7 @@ async function exportWithFFmpeg() {
     $('prog').value = p;
     const el = (performance.now() - t0) / 1000;
     const eta = p > 0.01 ? ' · còn ~' + fmtTime(el / p - el) : '';
-    setStatus('Đang mã hoá bằng FFmpeg — ' + (p * 100).toFixed(1) + '%' + eta +
-      ' (đã trôi ' + fmtTime(el) + ')');
+    setStatus('Đang mã hoá bằng FFmpeg — ' + (p * 100).toFixed(1) + '%' + eta + ' (đã trôi ' + fmtTime(el) + ')');
   }, 500);
 
   log('ffmpeg ' + args.join(' '));
