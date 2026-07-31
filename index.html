@@ -4,9 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Silence Remover — Xoá khoảng lặng video ngay trên trình duyệt</title>
-<link rel="stylesheet" href="styles.css?v=8" />
+<link rel="stylesheet" href="styles.css?v=9" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>✂️</text></svg>" />
-<script src="coi-serviceworker.js?v=8"></script>
+<script src="coi-serviceworker.js?v=9"></script>
 </head>
 <body>
 <header>
@@ -66,9 +66,9 @@
     <h2>4. Xuất video đã cắt</h2>
     <div id="srcInfo" class="status"></div>
     <div class="row">
-      <label class="chk"><input type="radio" name="engine" value="turbo" checked /> <b>Turbo (WebCodecs)</b> — MP4, tăng tốc phần cứng — <i>khuyến nghị</i></label>
+      <label class="chk"><input type="radio" name="engine" value="turbo" checked /> <b>Turbo (WebCodecs)</b> — MP4, tăng tốc phần cứng</label>
       <label class="chk"><input type="radio" name="engine" value="recorder" /> MediaRecorder — WebM, ghi thời gian thực</label>
-      <label class="chk"><input type="radio" name="engine" value="ffmpeg" /> FFmpeg.wasm — MP4, chạy bằng phần mềm (chậm với 4K)</label>
+      <label class="chk"><input type="radio" name="engine" value="ffmpeg" /> FFmpeg.wasm — MP4, giải mã bằng phần mềm (chạy được cả HEVC)</label>
     </div>
     <div id="isoStatus" class="status"></div>
     <div class="grid">
@@ -78,7 +78,7 @@
           <option value="2" selected>2× — khuyến nghị</option>
           <option value="4">4× — nhanh nhất</option>
         </select>
-        <small>Nhanh hơn thời gian thực bằng cách đọc video tăng tốc. Nếu máy không theo kịp có thể rơi khung hình — hãy hạ xuống 1×.</small>
+        <small>Nếu máy không theo kịp có thể rơi khung hình — hạ xuống 1×.</small>
       </label>
       <label>Độ phân giải đầu ra
         <select id="scale">
@@ -125,9 +125,9 @@
 
 <footer>
   <p>Không upload · Không theo dõi · Mã nguồn mở (MIT) · <a href="https://github.com/xtapo/video-silence-remover">GitHub</a></p>
-  <p>Phiên bản <b id="buildId">esm-8</b> — nếu bạn thấy số khác, hãy tải lại trang bằng Ctrl/Cmd + Shift + R.</p>
+  <p>Phiên bản <b id="buildId">esm-9</b> — nếu bạn thấy số khác, hãy tải lại trang bằng Ctrl/Cmd + Shift + R.</p>
 </footer>
 
-<script type="module" src="app.js?v=8"></script>
+<script type="module" src="app.js?v=9"></script>
 </body>
 </html>
